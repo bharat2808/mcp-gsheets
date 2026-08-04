@@ -1,0 +1,119 @@
+import { createHash, randomBytes } from 'node:crypto';
+
+import { OAuthTokenSet } from './credential-vault.js';
+
+export const GOOGLE_OAUTH_SCOPES = [
+  'openid',
+  'email',
+  'https://www.googleapis.com/auth/drive.metadata.readonly',
+  'https://www.googleapis.com/auth/spreadsheets',
+] as const;
+
+export interface PkcePair {
+  verifier: string;
+  challenge: string;
+  method: 'S256';
+}
+
+export interface AuthorizationUrlInput {
+  clientId: string;
+  redirectUri: string;
+  state: string;
+  challenge: string;
+}
+
+export interface GoogleTokenResponse {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+  token_type?: string;
+}
+
+export interface AuthorizationCodeExchangeInput {
+  clientId: string;
+  code: string;
+  verifier: string;
+  redirectUri: string;
+}
+
+export function createPkcePair(): PkcePair {
+  const verifier = randomBytes(64).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge, method: 'S256' };
+}
+
+export function buildGoogleAuthorizationUrl(input: AuthorizationUrlInput): string {
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.search = new URLSearchParams({
+    client_id: input.clientId,
+    redirect_uri: input.redirectUri,
+    response_type: 'code',
+    scope: GOOGLE_OAUTH_SCOPES.join(' '),
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    state: input.state,
+    code_challenge: input.challenge,
+    code_challenge_method: 'S256',
+  }).toString();
+  return url.toString();
+}
+
+export function parseOAuthCallback(url: URL, expectedState: string): string {
+  const error = url.searchParams.get('error');
+  if (error) {
+    throw new Error(`Google OAuth failed: ${error}`);
+  }
+  if (url.searchParams.get('state') !== expectedState) {
+    throw new Error('Google OAuth callback state did not match');
+  }
+  const code = url.searchParams.get('code');
+  if (!code) {
+    throw new Error('Google OAuth callback did not contain an authorization code');
+  }
+  return code;
+}
+
+export function toStoredTokenSet(response: GoogleTokenResponse, now = Date.now()): OAuthTokenSet {
+  if (!response.access_token) {
+    throw new Error('Google OAuth did not return an access token');
+  }
+  if (!response.refresh_token) {
+    throw new Error('Google OAuth did not return a refresh token');
+  }
+  if (!response.expires_in) {
+    throw new Error('Google OAuth did not return an expiry');
+  }
+
+  return {
+    accessToken: response.access_token,
+    refreshToken: response.refresh_token,
+    expiryDate: now + response.expires_in * 1000,
+    scope: response.scope ?? GOOGLE_OAUTH_SCOPES.join(' '),
+    tokenType: response.token_type ?? 'Bearer',
+  };
+}
+
+export async function exchangeAuthorizationCode(
+  input: AuthorizationCodeExchangeInput,
+  fetcher: typeof fetch = fetch,
+  now = Date.now()
+): Promise<OAuthTokenSet> {
+  const body = new URLSearchParams({
+    client_id: input.clientId,
+    code: input.code,
+    code_verifier: input.verifier,
+    redirect_uri: input.redirectUri,
+    grant_type: 'authorization_code',
+  });
+  const response = await fetcher('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!response.ok) {
+    throw new Error(`Google OAuth token exchange failed with HTTP ${response.status}`);
+  }
+  return toStoredTokenSet((await response.json()) as GoogleTokenResponse, now);
+}

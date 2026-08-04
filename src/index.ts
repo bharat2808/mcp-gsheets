@@ -1,275 +1,36 @@
 #!/usr/bin/env node
 
-// Load .env file only in explicit development mode
 if (process.env.NODE_ENV === 'development') {
   try {
     const { config } = await import('dotenv');
-    const result = config();
-    if (result.parsed) {
-      console.error('📋 Loaded .env file for development');
-    }
+    config();
+    console.error('Loaded .env file for development');
   } catch (error) {
-    console.error('⚠️ Failed to load .env file:', error);
+    console.error('Failed to load .env file:', error);
   }
 }
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  CallToolRequest,
-  ReadResourceRequest,
-  GetPromptRequest,
-} from '@modelcontextprotocol/sdk/types.js';
 
-import { validateAuth } from './utils/google-auth.js';
-import {
-  resolveToolsets,
-  annotationsFor,
-  ToolsetConfigError,
-  TOOLSETS,
-} from './config/toolsets.js';
+import { GSheetsRuntime } from './runtime/gsheets-runtime.js';
+import { createGSheetsServer } from './server/create-server.js';
 
-// Import all tools
-import * as tools from './tools/index.js';
+const runtime = new GSheetsRuntime();
 
-// Import resources
-import { resourceTemplates, handleResourceRead } from './resources/index.js';
-
-// Import prompts
-import { allPrompts, handleGetPrompt } from './prompts/index.js';
-
-// Tool handler mapping
-const toolHandlers = new Map<string, (input: any) => Promise<any>>([
-  ['sheets_check_access', tools.handleCheckAccess],
-  ['sheets_get_values', tools.handleGetValues],
-  ['sheets_batch_get_values', tools.handleBatchGetValues],
-  ['sheets_get_metadata', tools.handleGetMetadata],
-  ['sheets_update_values', tools.handleUpdateValues],
-  ['sheets_batch_update_values', tools.handleBatchUpdateValues],
-  ['sheets_append_values', tools.handleAppendValues],
-  ['sheets_clear_values', tools.handleClearValues],
-  ['sheets_create_spreadsheet', tools.handleCreateSpreadsheet],
-  ['sheets_insert_sheet', tools.handleInsertSheet],
-  ['sheets_delete_sheet', tools.handleDeleteSheet],
-  ['sheets_duplicate_sheet', tools.handleDuplicateSheet],
-  ['sheets_copy_to', tools.handleCopyTo],
-  ['sheets_update_sheet_properties', tools.handleUpdateSheetProperties],
-  ['sheets_format_cells', tools.formatCellsHandler],
-  ['sheets_update_borders', tools.updateBordersHandler],
-  ['sheets_merge_cells', tools.mergeCellsHandler],
-  ['sheets_unmerge_cells', tools.unmergeCellsHandler],
-  ['sheets_add_conditional_formatting', tools.addConditionalFormattingHandler],
-  ['sheets_add_table', tools.addTableHandler],
-  ['sheets_update_table', tools.updateTableHandler],
-  ['sheets_delete_table', tools.deleteTableHandler],
-  ['sheets_get_tables', tools.getTablesHandler],
-  // Batch operations
-  ['sheets_batch_delete_sheets', tools.handleBatchDeleteSheets],
-  ['sheets_batch_format_cells', tools.handleBatchFormatCells],
-  // Chart operations
-  ['sheets_create_chart', tools.handleCreateChart],
-  ['sheets_update_chart', tools.handleUpdateChart],
-  ['sheets_delete_chart', tools.handleDeleteChart],
-  // Link and date operations
-  ['sheets_insert_link', tools.handleInsertLink],
-  ['sheets_insert_date', tools.handleInsertDate],
-  // Row operations
-  ['sheets_insert_rows', tools.handleInsertRows],
-  ['sheets_delete_columns', tools.handleDeleteColumns],
-  ['sheets_delete_rows', tools.handleDeleteRows],
-  // READ / Snapshot tools
-  ['sheets_get_merged_cells', tools.handleGetMergedCells],
-  ['sheets_get_sheet_dimensions', tools.handleGetSheetDimensions],
-  ['sheets_get_sheet_formatting', tools.handleGetSheetFormatting],
-  ['sheets_get_conditional_formatting', tools.handleGetConditionalFormattingData],
-  ['sheets_get_full_sheet_snapshot', tools.handleGetFullSheetSnapshot],
-  ['sheets_get_sheet_structure', tools.handleGetSheetStructure],
-  ['sheets_get_formatting_compact', tools.handleGetFormattingCompact],
-  ['sheets_get_data_validation', tools.handleGetDataValidation],
-  ['sheets_get_basic_filter', tools.handleGetBasicFilter],
-  // Border and comparison tools
-  ['sheets_get_border_map', tools.handleGetBorderMap],
-  ['sheets_compare_ranges', tools.handleCompareRanges],
-]);
-
-// All tools
-const allTools = [
-  tools.checkAccessTool,
-  tools.getValuesTool,
-  tools.batchGetValuesTool,
-  tools.getMetadataTool,
-  tools.updateValuesTool,
-  tools.batchUpdateValuesTool,
-  tools.appendValuesTool,
-  tools.clearValuesTool,
-  tools.createSpreadsheetTool,
-  tools.insertSheetTool,
-  tools.deleteSheetTool,
-  tools.duplicateSheetTool,
-  tools.copyToTool,
-  tools.updateSheetPropertiesTool,
-  tools.formatCellsTool,
-  tools.updateBordersTool,
-  tools.mergeCellsTool,
-  tools.unmergeCellsTool,
-  tools.addConditionalFormattingTool,
-  tools.addTableTool,
-  tools.updateTableTool,
-  tools.deleteTableTool,
-  tools.getTablesTool,
-  // Batch operations
-  tools.batchDeleteSheetsTool,
-  tools.batchFormatCellsTool,
-  // Chart operations
-  tools.createChartTool,
-  tools.updateChartTool,
-  tools.deleteChartTool,
-  // Link and date operations
-  tools.insertLinkTool,
-  tools.insertDateTool,
-  // Row operations
-  tools.insertRowsTool,
-  tools.deleteColumnsTool,
-  tools.deleteRowsTool,
-  // READ / Snapshot tools
-  tools.getMergedCellsTool,
-  tools.getSheetDimensionsTool,
-  tools.getSheetFormattingTool,
-  tools.getConditionalFormattingDataTool,
-  tools.getFullSheetSnapshotTool,
-  tools.getSheetStructureTool,
-  tools.getFormattingCompactTool,
-  tools.getDataValidationTool,
-  tools.getBasicFilterTool,
-  // Border and comparison tools
-  tools.getBorderMapTool,
-  tools.compareRangesTool,
-];
-
-async function main() {
-  // Validate authentication on startup
-  try {
-    validateAuth();
-  } catch (error: any) {
-    console.error('Authentication Error:', error.message);
-    process.exit(1);
-  }
-
-  // Resolve which tools this process exposes. Fails fast on a bad toolset
-  // name rather than silently serving a smaller set than the user expects.
-  let toolsetConfig;
-  try {
-    toolsetConfig = resolveToolsets();
-  } catch (error) {
-    if (error instanceof ToolsetConfigError) {
-      console.error(`Configuration Error: ${error.message}`);
-      process.exit(1);
-    }
-    throw error;
-  }
-
-  const { enabled, readOnly, allowed } = toolsetConfig;
-  const exposedTools = allTools
-    .filter((tool) => allowed.has(tool.name))
-    .map((tool) => ({ ...tool, annotations: annotationsFor(tool.name) }));
-
-  if (enabled.length < Object.keys(TOOLSETS).length || readOnly) {
-    console.error(
-      `Toolsets: ${enabled.join(', ')}${readOnly ? ' (read-only)' : ''} — ` +
-        `${exposedTools.length}/${allTools.length} tools`
-    );
-  }
-
-  const server = new Server(
-    {
-      name: 'spreadsheet',
-      version: '1.8.0',
-    },
-    {
-      capabilities: {
-        resources: { listChanged: false },
-        tools: { listChanged: false },
-        prompts: { listChanged: false },
-      },
-    }
-  );
-
-  // List available tools
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return {
-      tools: exposedTools,
-    };
-  });
-
-  // Handle tool execution
-  server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
-    const { name, arguments: args } = request.params;
-
-    // Enforce the filter on the call path too. Hiding a tool from tools/list
-    // is a context optimisation, not a guarantee — read-only mode in
-    // particular has to hold even if a client calls a write tool by name.
-    if (!allowed.has(name)) {
-      throw new Error(
-        toolHandlers.has(name)
-          ? `Tool ${name} is disabled by the current GSHEETS_TOOLSETS/GSHEETS_READ_ONLY configuration`
-          : `Unknown tool: ${name}`
-      );
-    }
-
-    const handler = toolHandlers.get(name);
-    if (!handler) {
-      throw new Error(`Unknown tool: ${name}`);
-    }
-
-    try {
-      return await handler(args);
-    } catch (error: any) {
-      console.error(`Error executing tool ${name}:`, error);
-      throw error;
-    }
-  });
-
-  // List resource templates
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-    return { resourceTemplates };
-  });
-
-  // List resources (empty - we use templates)
-  server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    return { resources: [] };
-  });
-
-  // Read resource
-  server.setRequestHandler(ReadResourceRequestSchema, async (request: ReadResourceRequest) => {
-    const uri = request.params.uri;
-    return handleResourceRead(uri);
-  });
-
-  // List prompts
-  server.setRequestHandler(ListPromptsRequestSchema, async () => {
-    return { prompts: allPrompts };
-  });
-
-  // Get prompt
-  server.setRequestHandler(GetPromptRequestSchema, async (request: GetPromptRequest) => {
-    const { name, arguments: args } = request.params;
-    return handleGetPrompt(name, args);
-  });
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  console.error('Google Sheets MCP server running on stdio');
+async function main(): Promise<void> {
+  await runtime.initialize();
+  const server = createGSheetsServer(runtime);
+  await server.connect(new StdioServerTransport());
+  console.error('GSheets local plugin running on stdio');
 }
 
-main().catch((error) => {
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    void runtime.close().finally(() => process.exit(0));
+  });
+}
+
+main().catch((error: unknown) => {
   console.error('Fatal error:', error);
-  process.exit(1);
+  void runtime.close().finally(() => process.exit(1));
 });
