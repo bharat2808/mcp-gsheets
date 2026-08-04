@@ -29,11 +29,11 @@ The Codex plugin manifest is `.codex-plugin/plugin.json`; `.mcp.json` launches `
 - Cell payloads, headers, selected folder IDs, and change summaries are AES-256-GCM encrypted in SQLite.
 - Search uses keyed HMAC blind tokens; plaintext row values are not stored.
 - Startup performs catch-up indexing; polling repeats every five minutes while the server is running, and unchanged Drive versions skip content downloads.
-- Native table metadata, tab headers, used ranges, row identifiers, and row fingerprints are indexed.
+- Native table metadata, tab headers, used ranges, row identifiers, row fingerprints, and separate formatted/raw row values are indexed securely.
 - `search` and `fetch` implement the standard company-knowledge payload contract.
 - Writes are proposals that expire after 15 minutes. Approval requires an app-only nonce and checks the Drive file revision and target values immediately before writing.
 - Successful writes are re-read for verification and stored in an encrypted audit history.
-- Supported writes are row append and row update. Formulas, deletion, formatting, creation, and structural edits are rejected by omission from the tool surface.
+- Supported writes are row append and exact-cell row update. Unchanged cells and formulas are preserved; formula generation, deletion, formatting, creation, and structural edits are rejected.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data flow and the documented Google Sheets preflight race.
 

@@ -39,6 +39,7 @@ interface ValuesResponse {
   values?: unknown[][];
   updatedRange?: string;
   updates?: { updatedRange?: string };
+  responses?: Array<{ updatedRange?: string }>;
 }
 
 function quoteSheetTitle(title: string): string {
@@ -108,7 +109,11 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
       files.push(
         ...(page.files ?? [])
           .filter((file) => !file.driveId)
-          .map((file) => ({ ...file, parents: file.parents ?? [] }))
+          .map((file) => ({
+            ...file,
+            parents: file.parents ?? [],
+            ...(file.version !== undefined ? { version: String(file.version) } : {}),
+          }))
       );
       pageToken = page.nextPageToken;
     } while (pageToken);
@@ -116,7 +121,13 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
   }
 
   async readSpreadsheet(spreadsheetId: string): Promise<{
-    sheets: Array<{ sheetId: number; title: string; values: unknown[][]; tables: IndexedTable[] }>;
+    sheets: Array<{
+      sheetId: number;
+      title: string;
+      values: unknown[][];
+      rawValues: unknown[][];
+      tables: IndexedTable[];
+    }>;
   }> {
     const metadata = await this.#json<SpreadsheetMetadata>(
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(sheetId,title),tables(tableId,name,range,columnProperties))`
@@ -132,10 +143,14 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
       const response = await this.#json<ValuesResponse>(
         `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${range}`
       );
+      const rawResponse = await this.#json<ValuesResponse>(
+        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${range}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING`
+      );
       sheets.push({
         sheetId,
         title,
         values: response.values ?? [],
+        rawValues: rawResponse.values ?? response.values ?? [],
         tables: (entry.tables ?? []).map((table) => formatTable(table, title)),
       });
     }
@@ -149,7 +164,7 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
     if (!response.version) {
       throw new Error('Google Drive did not return a file revision');
     }
-    return response.version;
+    return String(response.version);
   }
 
   async readRow(proposal: SheetChangeProposal): Promise<Record<string, CellValue>> {
@@ -157,7 +172,7 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
       throw new Error('An update proposal requires a row number');
     }
     const sheet = await this.#findSheet(proposal);
-    const parsed = parseSheetValues(sheet.values);
+    const parsed = parseSheetValues(sheet.rawValues);
     const row = parsed.rows.find((candidate) => candidate.rowNumber === proposal.rowNumber);
     if (!row) {
       throw new Error(`Row ${proposal.rowNumber} no longer exists`);
@@ -168,7 +183,7 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
 
   async apply(proposal: SheetChangeProposal): Promise<{ updatedRange: string; verified: boolean }> {
     const sheet = await this.#findSheet(proposal);
-    const parsed = parseSheetValues(sheet.values);
+    const parsed = parseSheetValues(sheet.rawValues);
     const unknown = Object.keys(proposal.values).filter(
       (header) => !parsed.headers.includes(header)
     );
@@ -176,35 +191,47 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
       throw new Error(`Unknown columns: ${unknown.join(', ')}`);
     }
 
-    let rowValues: Record<string, CellValue>;
-    let method: 'POST' | 'PUT';
-    let url: URL;
+    let response: ValuesResponse;
     if (proposal.operation === 'append') {
-      rowValues = proposal.values;
-      method = 'POST';
-      url = new URL(
+      const url = new URL(
         `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(proposal.spreadsheetId)}/values/${encodeURIComponent(quoteSheetTitle(proposal.sheetTitle))}:append`
       );
       url.searchParams.set('insertDataOption', 'INSERT_ROWS');
+      url.searchParams.set('valueInputOption', 'RAW');
+      response = await this.#json<ValuesResponse>(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          values: [parsed.headers.map((header) => proposal.values[header] ?? null)],
+        }),
+      });
     } else {
       const existing = parsed.rows.find((row) => row.rowNumber === proposal.rowNumber);
       if (!existing || !proposal.rowNumber) {
         throw new Error('The target row no longer exists');
       }
-      rowValues = { ...existing.values, ...proposal.values };
-      method = 'PUT';
-      const range = `${quoteSheetTitle(proposal.sheetTitle)}!A${proposal.rowNumber}:${this.#columnName(parsed.headers.length - 1)}${proposal.rowNumber}`;
-      url = new URL(
-        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(proposal.spreadsheetId)}/values/${encodeURIComponent(range)}`
+      const url = new URL(
+        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(proposal.spreadsheetId)}/values:batchUpdate`
       );
+      const data = Object.entries(proposal.values).map(([header, value]) => {
+        const columnIndex = parsed.headers.indexOf(header);
+        return {
+          range: `${quoteSheetTitle(proposal.sheetTitle)}!${columnName(columnIndex)}${proposal.rowNumber}`,
+          values: [[value]],
+        };
+      });
+      response = await this.#json<ValuesResponse>(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ valueInputOption: 'RAW', data }),
+      });
     }
-    url.searchParams.set('valueInputOption', 'RAW');
-    const response = await this.#json<ValuesResponse>(url, {
-      method,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ values: [parsed.headers.map((header) => rowValues[header] ?? null)] }),
-    });
-    const updatedRange = response.updatedRange ?? response.updates?.updatedRange;
+    const updatedRange =
+      response.updatedRange ??
+      response.updates?.updatedRange ??
+      response.responses
+        ?.flatMap((entry) => (entry.updatedRange ? [entry.updatedRange] : []))
+        .join(', ');
     if (!updatedRange) {
       throw new Error('Google Sheets did not confirm the updated range');
     }
@@ -275,17 +302,6 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
       tokenType: body.token_type ?? this.#tokens.tokenType,
     };
     await this.saveTokens(this.#tokens);
-  }
-
-  #columnName(index: number): string {
-    let value = index + 1;
-    let result = '';
-    while (value > 0) {
-      value -= 1;
-      result = String.fromCharCode(65 + (value % 26)) + result;
-      value = Math.floor(value / 26);
-    }
-    return result;
   }
 
   #lastRowNumber(range: string): number {

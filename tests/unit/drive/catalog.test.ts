@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildSelectedCatalog, DriveFileMetadata } from '../../../src/drive/catalog.js';
+import {
+  buildCatalogTree,
+  buildSelectedCatalog,
+  DriveFileMetadata,
+} from '../../../src/drive/catalog.js';
 
 describe('buildSelectedCatalog', () => {
   const files: DriveFileMetadata[] = [
     { id: 'root', name: 'Finance', mimeType: 'application/vnd.google-apps.folder', parents: [] },
-    { id: 'child', name: 'FY26', mimeType: 'application/vnd.google-apps.folder', parents: ['root'] },
+    {
+      id: 'child',
+      name: 'FY26',
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: ['root'],
+    },
     {
       id: 'sheet-1',
       name: 'Accounts',
@@ -34,5 +43,23 @@ describe('buildSelectedCatalog', () => {
     expect(buildSelectedCatalog(files, ['root']).map((file) => file.id)).not.toContain(
       'sheet-outside'
     );
+  });
+
+  it('builds a nested folder tree for one-call catalog exploration', () => {
+    const catalog = buildSelectedCatalog(files, ['root']);
+
+    expect(buildCatalogTree(catalog)).toMatchObject({
+      folders: [
+        {
+          name: 'Finance',
+          folders: [
+            {
+              name: 'FY26',
+              spreadsheets: [expect.objectContaining({ id: 'sheet-1', name: 'Accounts' })],
+            },
+          ],
+        },
+      ],
+    });
   });
 });

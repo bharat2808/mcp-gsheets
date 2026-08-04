@@ -5,6 +5,7 @@ import { KeyringBackend } from '../auth/keyring-backend.js';
 import { OAuthSetupServer } from '../auth/setup-server.js';
 import { dataDirectory, googleClientId } from '../config/runtime.js';
 import { CellValue } from '../domain/types.js';
+import { buildCatalogTree } from '../drive/catalog.js';
 import { GoogleApiClient } from '../google/google-api-client.js';
 import { findDuplicateRow } from '../indexing/rows.js';
 import {
@@ -34,6 +35,7 @@ export class GSheetsRuntime {
   #poller: NodeJS.Timeout | null = null;
   #lastRefresh: RefreshResult | null = null;
   #lastError: string | null = null;
+  #refreshPromise: Promise<RefreshResult> | null = null;
 
   async initialize(): Promise<void> {
     const key = await this.#vault.getOrCreateDataKey();
@@ -65,13 +67,25 @@ export class GSheetsRuntime {
       setupUrl: this.#setupUrl,
       selectedFolderCount: this.#index?.getSelectedFolderIds().length ?? 0,
       lastRefresh: this.#lastRefresh,
+      refreshing: Boolean(this.#refreshPromise),
       error: this.#lastError,
       pollingIntervalMinutes: 5,
     };
   }
 
   catalog() {
-    return this.#requiredIndex().getCatalog();
+    const spreadsheets = this.#requiredIndex().getCatalog();
+    const indexedTimes = spreadsheets.flatMap((record) =>
+      record.lastIndexedAt ? [record.lastIndexedAt] : []
+    );
+    return {
+      lastSyncedAt:
+        this.#lastRefresh?.completedAt ??
+        indexedTimes.sort((first, second) => second.localeCompare(first))[0] ??
+        null,
+      spreadsheets,
+      tree: buildCatalogTree(spreadsheets),
+    };
   }
 
   recentChanges(limit?: number) {
@@ -105,26 +119,71 @@ export class GSheetsRuntime {
     if (!this.#sync) {
       throw new Error(this.#lastError ?? 'Connect Google first');
     }
-    this.#lastRefresh = await this.#sync.refresh(this.#requiredIndex().getSelectedFolderIds());
-    this.#lastError = null;
-    return this.#lastRefresh;
+    if (this.#refreshPromise) {
+      return this.#refreshPromise;
+    }
+    this.#refreshPromise = this.#sync.refresh(this.#requiredIndex().getSelectedFolderIds());
+    try {
+      this.#lastRefresh = await this.#refreshPromise;
+      this.#lastError = null;
+      return this.#lastRefresh;
+    } catch (error) {
+      this.#lastError = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      this.#refreshPromise = null;
+    }
   }
 
   async prepare(input: PrepareChangeInput): Promise<SheetChangeProposal> {
     const client = this.#requiredClient();
-    const details = this.explore(input.spreadsheetId);
+    let details = this.explore(input.spreadsheetId);
+    const baseRevision = await client.getRevision(input.spreadsheetId);
+    if (
+      details.spreadsheet.version !== baseRevision ||
+      details.spreadsheet.indexStatus !== 'current'
+    ) {
+      await this.refresh();
+      details = this.explore(input.spreadsheetId);
+      if (
+        details.spreadsheet.version !== baseRevision ||
+        details.spreadsheet.indexStatus !== 'current'
+      ) {
+        throw new Error('The local index is stale; refresh before preparing this change');
+      }
+    }
     const sheet = details.sheets.find((entry) => entry.sheetId === input.sheetId);
     if (!sheet) {
       throw new Error(`Sheet ${input.sheetId} is not indexed`);
     }
+    const unknownColumns = Object.keys(input.values).filter(
+      (column) => !sheet.headers.includes(column)
+    );
+    if (unknownColumns.length > 0) {
+      throw new Error(`Unknown columns: ${unknownColumns.join(', ')}`);
+    }
     let expectedValues: Record<string, CellValue> | undefined;
+    let displayBeforeValues: Record<string, CellValue> | undefined;
     if (input.operation === 'update') {
       if (!input.rowNumber) {
         throw new Error('An update requires rowNumber');
       }
-      const row = this.fetch(`sheetrow:${input.spreadsheetId}:${input.sheetId}:${input.rowNumber}`);
+      const row = this.#requiredIndex().getRawRow(
+        input.spreadsheetId,
+        input.sheetId,
+        input.rowNumber
+      );
+      if (!row) {
+        throw new Error(`Row ${input.rowNumber} is not indexed`);
+      }
+      const displayRow = this.fetch(
+        `sheetrow:${input.spreadsheetId}:${input.sheetId}:${input.rowNumber}`
+      );
       expectedValues = Object.fromEntries(
-        Object.keys(input.values).map((key) => [key, row.values[key] ?? null])
+        Object.keys(input.values).map((key) => [key, row[key] ?? null])
+      );
+      displayBeforeValues = Object.fromEntries(
+        Object.keys(input.values).map((key) => [key, displayRow.values[key] ?? null])
       );
     } else {
       const snapshot = this.#requiredIndex().getSheetSnapshot(input.spreadsheetId, input.sheetId);
@@ -146,8 +205,9 @@ export class GSheetsRuntime {
       spreadsheetName: details.spreadsheet.name,
       spreadsheetPath: details.spreadsheet.path,
       sheetTitle: sheet.title,
-      baseRevision: await client.getRevision(input.spreadsheetId),
+      baseRevision,
       ...(expectedValues ? { expectedValues } : {}),
+      ...(displayBeforeValues ? { displayBeforeValues } : {}),
     });
   }
 

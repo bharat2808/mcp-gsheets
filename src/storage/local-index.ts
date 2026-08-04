@@ -65,6 +65,7 @@ export class LocalIndex {
         sheet_key TEXT NOT NULL REFERENCES sheets(sheet_key) ON DELETE CASCADE,
         row_number INTEGER NOT NULL,
         encrypted_payload TEXT NOT NULL,
+        encrypted_raw_payload TEXT,
         fingerprint TEXT NOT NULL,
         UNIQUE(sheet_key, row_number)
       ) STRICT;
@@ -94,8 +95,20 @@ export class LocalIndex {
     const sheetColumns = database.prepare('PRAGMA table_info(sheets)').all() as unknown as Array<{
       name: string;
     }>;
+    let requiresReindex = false;
     if (!sheetColumns.some((column) => column.name === 'encrypted_tables')) {
       database.exec('ALTER TABLE sheets ADD COLUMN encrypted_tables TEXT');
+      requiresReindex = true;
+    }
+    const rowColumns = database.prepare('PRAGMA table_info(rows)').all() as unknown as Array<{
+      name: string;
+    }>;
+    if (!rowColumns.some((column) => column.name === 'encrypted_raw_payload')) {
+      database.exec('ALTER TABLE rows ADD COLUMN encrypted_raw_payload TEXT');
+      requiresReindex = true;
+    }
+    if (requiresReindex) {
+      database.exec("UPDATE spreadsheets SET index_status = 'stale'");
     }
     this.#database = database;
   }
@@ -360,6 +373,27 @@ export class LocalIndex {
     };
   }
 
+  getRawRow(
+    spreadsheetId: string,
+    sheetId: number,
+    rowNumber: number
+  ): Record<string, import('../domain/types.js').CellValue> | null {
+    const rowId = `sheetrow:${spreadsheetId}:${sheetId}:${rowNumber}`;
+    const row = this.#db()
+      .prepare('SELECT encrypted_payload, encrypted_raw_payload FROM rows WHERE row_id = ?')
+      .get(rowId) as
+      | { encrypted_payload: string; encrypted_raw_payload: string | null }
+      | undefined;
+    if (!row) {
+      return null;
+    }
+    return decryptJson<Record<string, import('../domain/types.js').CellValue>>(
+      this.#key,
+      row.encrypted_raw_payload ?? row.encrypted_payload,
+      row.encrypted_raw_payload ? `${rowId}:raw` : rowId
+    );
+  }
+
   replaceSheetRows(input: ReplaceSheetRowsInput): void {
     const database = this.#db();
     const sheetKey = `${input.spreadsheetId}:${input.sheetId}`;
@@ -390,8 +424,8 @@ export class LocalIndex {
       database.prepare('DELETE FROM rows WHERE sheet_key = ?').run(sheetKey);
 
       const insertRow = database.prepare(
-        `INSERT INTO rows (row_id, sheet_key, row_number, encrypted_payload, fingerprint)
-         VALUES (?, ?, ?, ?, ?)`
+        `INSERT INTO rows (row_id, sheet_key, row_number, encrypted_payload, encrypted_raw_payload, fingerprint)
+         VALUES (?, ?, ?, ?, ?, ?)`
       );
       const insertToken = database.prepare(
         'INSERT OR IGNORE INTO search_tokens (token_hash, row_id) VALUES (?, ?)'
@@ -399,9 +433,14 @@ export class LocalIndex {
       for (const row of input.rows) {
         const rowId = `sheetrow:${input.spreadsheetId}:${input.sheetId}:${row.rowNumber}`;
         const payload = encryptJson(this.#key, row.values, rowId);
+        const rawValues = row.rawValues ?? row.values;
+        const rawPayload = encryptJson(this.#key, rawValues, `${rowId}:raw`);
         const fingerprint = fingerprintRow(row.values);
-        insertRow.run(rowId, sheetKey, row.rowNumber, payload, fingerprint);
-        for (const term of normalizeSearchTerms(Object.values(row.values))) {
+        insertRow.run(rowId, sheetKey, row.rowNumber, payload, rawPayload, fingerprint);
+        for (const term of normalizeSearchTerms([
+          ...Object.values(row.values),
+          ...Object.values(rawValues),
+        ])) {
           insertToken.run(hashSearchToken(this.#key, term), rowId);
         }
       }

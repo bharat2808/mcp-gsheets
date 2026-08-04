@@ -15,6 +15,7 @@ export interface SpreadsheetRecord {
 export interface IndexedRow {
   rowNumber: number;
   values: Record<string, CellValue>;
+  rawValues?: Record<string, CellValue>;
 }
 
 export interface IndexedTable {

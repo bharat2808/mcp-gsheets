@@ -12,6 +12,7 @@ export interface RemoteSheet {
   sheetId: number;
   title: string;
   values: readonly (readonly unknown[])[];
+  rawValues?: readonly (readonly unknown[])[];
   tables?: IndexedTable[];
 }
 
@@ -62,6 +63,13 @@ export class SyncService {
         const remote = await this.sheets.readSpreadsheet(spreadsheet.id);
         for (const sheet of remote.sheets) {
           const parsed = parseSheetValues(sheet.values);
+          const rawParsed = parseSheetValues(sheet.rawValues ?? sheet.values);
+          const rows = parsed.rows.map((row) => ({
+            ...row,
+            rawValues:
+              rawParsed.rows.find((rawRow) => rawRow.rowNumber === row.rowNumber)?.values ??
+              row.values,
+          }));
           const previous = this.index.getSheetSnapshot(spreadsheet.id, sheet.sheetId);
           if (previous) {
             this.index.recordChanges({
@@ -80,6 +88,7 @@ export class SyncService {
             sheetTitle: sheet.title,
             tables: sheet.tables ?? [],
             ...parsed,
+            rows,
           });
           sheetsIndexed += 1;
           rowsIndexed += parsed.rows.length;

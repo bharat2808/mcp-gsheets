@@ -65,6 +65,12 @@ describe('LocalIndex', () => {
           values: {
             Date: '2026-08-05',
             Customer: 'Ravi Kumar',
+            Amount: '₹4,280',
+            Reference: 'INV-1842',
+          },
+          rawValues: {
+            Date: '2026-08-05',
+            Customer: 'Ravi Kumar',
             Amount: 4280,
             Reference: 'INV-1842',
           },
@@ -79,6 +85,7 @@ describe('LocalIndex', () => {
         values: expect.objectContaining({ Customer: 'Ravi Kumar', Reference: 'INV-1842' }),
       }),
     ]);
+    expect(index.getRawRow('spreadsheet-1', 91, 2)).toMatchObject({ Amount: 4280 });
     index.close();
 
     expect(readFileSync(databasePath).includes(Buffer.from('Ravi Kumar'))).toBe(false);
@@ -127,7 +134,10 @@ describe('LocalIndex', () => {
 
     expect(index.getSelectedFolderIds()).toEqual(['finance']);
     expect(index.getRecentChanges()).toEqual([
-      expect.objectContaining({ spreadsheetName: 'Accounts', changes: [{ kind: 'modified', rows: [2] }] }),
+      expect.objectContaining({
+        spreadsheetName: 'Accounts',
+        changes: [{ kind: 'modified', rows: [2] }],
+      }),
     ]);
     index.close();
     expect(readFileSync(databasePath).includes(Buffer.from('finance'))).toBe(false);

@@ -19,6 +19,7 @@ interface Proposal {
   rowNumber?: number;
   values: Record<string, CellValue>;
   expectedValues?: Record<string, CellValue>;
+  displayBeforeValues?: Record<string, CellValue>;
   status: 'pending' | 'applied' | 'cancelled';
   expiresAt: string;
   result?: { updatedRange: string; verified?: boolean };
@@ -140,7 +141,9 @@ function ReviewApp() {
         {Object.entries(draft).map(([key, value]) => (
           <div className="grid" key={key}>
             <strong>{key}</strong>
-            <span className="old">{String(proposal.expectedValues?.[key] ?? '—')}</span>
+            <span className="old">
+              {String(proposal.displayBeforeValues?.[key] ?? proposal.expectedValues?.[key] ?? '—')}
+            </span>
             {typeof value === 'boolean' ? (
               <select
                 aria-label={`Proposed ${key}`}

@@ -15,6 +15,7 @@ export interface SheetChangeRequest {
   rowNumber?: number;
   values: Record<string, CellValue>;
   expectedValues?: Record<string, CellValue>;
+  displayBeforeValues?: Record<string, CellValue>;
   baseRevision: string;
 }
 

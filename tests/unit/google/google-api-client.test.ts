@@ -6,9 +6,42 @@ describe('GoogleApiClient', () => {
   it('lists only non-trashed My Drive files and follows pagination', async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ files: [{ id: 'one', name: 'One', mimeType: 'x', parents: [] }, { id: 'shared', name: 'Shared drive file', mimeType: 'x', parents: [], driveId: 'drive-1' }], nextPageToken: 'next' }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ files: [{ id: 'two', name: 'Two', mimeType: 'x', parents: [] }] }), { status: 200 }));
-    const client = new GoogleApiClient({ accessToken: 'token', refreshToken: 'refresh', expiryDate: Date.now() + 600_000, scope: '', tokenType: 'Bearer' }, 'client', vi.fn(), fetcher);
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            files: [
+              { id: 'one', name: 'One', mimeType: 'x', parents: [] },
+              {
+                id: 'shared',
+                name: 'Shared drive file',
+                mimeType: 'x',
+                parents: [],
+                driveId: 'drive-1',
+              },
+            ],
+            nextPageToken: 'next',
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ files: [{ id: 'two', name: 'Two', mimeType: 'x', parents: [] }] }),
+          { status: 200 }
+        )
+      );
+    const client = new GoogleApiClient(
+      {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expiryDate: Date.now() + 600_000,
+        scope: '',
+        tokenType: 'Bearer',
+      },
+      'client',
+      vi.fn(),
+      fetcher
+    );
 
     const files = await client.listFileGraph();
 
@@ -23,26 +56,214 @@ describe('GoogleApiClient', () => {
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(metadata), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ values: [['ID', 'Customer'], ['A-1', 'Acme']] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ updates: { updatedRange: 'Ledger!A3:B3' } }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            values: [
+              ['ID', 'Customer'],
+              ['A-1', 'Acme'],
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            values: [
+              ['ID', 'Customer'],
+              ['A-1', 'Acme'],
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ updates: { updatedRange: 'Ledger!A3:B3' } }), { status: 200 })
+      )
       .mockResolvedValueOnce(new Response(JSON.stringify(metadata), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ values: [['ID', 'Customer'], ['A-1', 'Acme'], ['A-2', 'Ravi']] }), { status: 200 }));
-    const client = new GoogleApiClient({ accessToken: 'token', refreshToken: 'refresh', expiryDate: Date.now() + 600_000, scope: '', tokenType: 'Bearer' }, 'client', vi.fn(), fetcher);
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            values: [
+              ['ID', 'Customer'],
+              ['A-1', 'Acme'],
+              ['A-2', 'Ravi'],
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            values: [
+              ['ID', 'Customer'],
+              ['A-1', 'Acme'],
+              ['A-2', 'Ravi'],
+            ],
+          }),
+          { status: 200 }
+        )
+      );
+    const client = new GoogleApiClient(
+      {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expiryDate: Date.now() + 600_000,
+        scope: '',
+        tokenType: 'Bearer',
+      },
+      'client',
+      vi.fn(),
+      fetcher
+    );
 
-    await expect(client.apply({
+    await expect(
+      client.apply({
+        id: 'proposal',
+        spreadsheetId: 'book',
+        spreadsheetName: 'Accounts',
+        spreadsheetPath: '/Finance/Accounts',
+        sheetId: 1,
+        sheetTitle: 'Ledger',
+        operation: 'append',
+        values: { ID: 'A-2', Customer: 'Ravi' },
+        baseRevision: '1',
+        status: 'pending',
+        createdAt: '2026-08-05T00:00:00Z',
+        expiresAt: '2026-08-05T00:15:00Z',
+        visuallyConfirmed: true,
+      })
+    ).resolves.toEqual({ updatedRange: 'Ledger!A3:B3', verified: true });
+  });
+
+  it('uses raw values for preflight while retaining formatted values for indexing', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ sheets: [{ properties: { sheetId: 1, title: 'Ledger' } }] }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            values: [
+              ['ID', 'Amount'],
+              ['A-1', '₹4,280'],
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            values: [
+              ['ID', 'Amount'],
+              ['A-1', 4280],
+            ],
+          }),
+          { status: 200 }
+        )
+      );
+    const client = new GoogleApiClient(
+      {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expiryDate: Date.now() + 600_000,
+        scope: '',
+        tokenType: 'Bearer',
+      },
+      'client',
+      vi.fn(),
+      fetcher
+    );
+
+    await expect(
+      client.readRow({
+        id: 'proposal',
+        spreadsheetId: 'book',
+        spreadsheetName: 'Accounts',
+        spreadsheetPath: '/Finance/Accounts',
+        sheetId: 1,
+        sheetTitle: 'Ledger',
+        operation: 'update',
+        rowNumber: 2,
+        values: { Amount: 5000 },
+        expectedValues: { Amount: 4280 },
+        baseRevision: '1',
+        status: 'pending',
+        createdAt: '2026-08-05T00:00:00Z',
+        expiresAt: '2026-08-05T00:15:00Z',
+        visuallyConfirmed: true,
+      })
+    ).resolves.toEqual({ Amount: 4280 });
+  });
+
+  it('updates only proposed cells so untouched formulas are preserved', async () => {
+    const metadata = { sheets: [{ properties: { sheetId: 1, title: 'Ledger' } }] };
+    const before = {
+      values: [
+        ['ID', 'Amount', 'Formula'],
+        ['A-1', 4280, 8560],
+      ],
+    };
+    const after = {
+      values: [
+        ['ID', 'Amount', 'Formula'],
+        ['A-1', 5000, 10000],
+      ],
+    };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(metadata), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(before), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(before), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ responses: [{ updatedRange: 'Ledger!B2' }] }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(metadata), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(after), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(after), { status: 200 }));
+    const client = new GoogleApiClient(
+      {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expiryDate: Date.now() + 600_000,
+        scope: '',
+        tokenType: 'Bearer',
+      },
+      'client',
+      vi.fn(),
+      fetcher
+    );
+
+    await client.apply({
       id: 'proposal',
       spreadsheetId: 'book',
       spreadsheetName: 'Accounts',
       spreadsheetPath: '/Finance/Accounts',
       sheetId: 1,
       sheetTitle: 'Ledger',
-      operation: 'append',
-      values: { ID: 'A-2', Customer: 'Ravi' },
+      operation: 'update',
+      rowNumber: 2,
+      values: { Amount: 5000 },
+      expectedValues: { Amount: 4280 },
       baseRevision: '1',
       status: 'pending',
       createdAt: '2026-08-05T00:00:00Z',
       expiresAt: '2026-08-05T00:15:00Z',
       visuallyConfirmed: true,
-    })).resolves.toEqual({ updatedRange: 'Ledger!A3:B3', verified: true });
+    });
+
+    const writeUrl = String(fetcher.mock.calls[3]?.[0]);
+    const writeBody = JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body));
+    expect(writeUrl).toContain('/values:batchUpdate');
+    expect(writeBody.data).toEqual([{ range: "'Ledger'!B2", values: [[5000]] }]);
   });
 });

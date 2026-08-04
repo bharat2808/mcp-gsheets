@@ -13,6 +13,13 @@ export interface DriveFileMetadata {
   driveId?: string;
 }
 
+export interface CatalogTreeFolder {
+  name: string;
+  path: string;
+  folders: CatalogTreeFolder[];
+  spreadsheets: SpreadsheetRecord[];
+}
+
 function resolvePath(
   file: DriveFileMetadata,
   filesById: ReadonlyMap<string, DriveFileMetadata>,
@@ -67,4 +74,32 @@ export function buildSelectedCatalog(
       ];
     })
     .sort((first, second) => first.path.localeCompare(second.path));
+}
+
+export function buildCatalogTree(catalog: readonly SpreadsheetRecord[]): CatalogTreeFolder {
+  const root: CatalogTreeFolder = { name: 'My Drive', path: '/', folders: [], spreadsheets: [] };
+  for (const spreadsheet of catalog) {
+    const parts = spreadsheet.path.split('/').filter(Boolean);
+    const folderParts = parts.slice(0, -1);
+    let parent = root;
+    let path = '';
+    for (const folderName of folderParts) {
+      path += `/${folderName}`;
+      let folder = parent.folders.find((candidate) => candidate.name === folderName);
+      if (!folder) {
+        folder = { name: folderName, path, folders: [], spreadsheets: [] };
+        parent.folders.push(folder);
+      }
+      parent = folder;
+    }
+    parent.spreadsheets.push(spreadsheet);
+  }
+
+  const sortFolder = (folder: CatalogTreeFolder): void => {
+    folder.folders.sort((first, second) => first.name.localeCompare(second.name));
+    folder.spreadsheets.sort((first, second) => first.name.localeCompare(second.name));
+    folder.folders.forEach(sortFolder);
+  };
+  sortFolder(root);
+  return root;
 }
