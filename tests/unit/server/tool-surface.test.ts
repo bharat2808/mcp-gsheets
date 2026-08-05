@@ -70,21 +70,45 @@ describe('public MCP tool surface', () => {
     }
   });
 
-  it('keeps sign-out non-executable until reviewed routing is available', async () => {
+  it('prepares sign-out for app review without executing the account action', async () => {
     const signOut = vi.fn().mockResolvedValue({ signedOut: true });
-    const server = createGSheetsServer({ signOut } as unknown as GSheetsRuntime, {
-      GSHEETS_TOOL_CATEGORIES: 'account',
-    });
+    const proposal = {
+      version: 2 as const,
+      id: '11111111-1111-4111-8111-111111111111',
+      nonce: 'app-only-secret-token-that-is-long-enough',
+      operation: 'sign_out',
+      arguments: { revokeGoogleGrant: false },
+      affectedResources: [{ kind: 'account', id: 'google', label: 'Connected Google account' }],
+      preview: { kind: 'exact', before: { connected: true }, after: { connected: false } },
+      riskReasons: ['Sign-out requires review'],
+      driveRevisions: {},
+      editable: false,
+      status: 'pending',
+      verificationState: 'not_started',
+      createdAt: '2026-08-05T00:00:00Z',
+      expiresAt: '2026-08-05T00:15:00Z',
+      visuallyConfirmed: false,
+    };
+    const prepareSignOut = vi.fn().mockResolvedValue(proposal);
+    const server = createGSheetsServer(
+      {
+        signOut,
+        prepareSignOut,
+        confirmationToken: () => proposal.nonce,
+      } as unknown as GSheetsRuntime,
+      {
+        GSHEETS_TOOL_CATEGORIES: 'account',
+      }
+    );
     const categoryClient = new Client({ name: 'test', version: '1' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), categoryClient.connect(clientTransport)]);
 
     try {
       const response = await categoryClient.callTool({ name: 'sign_out', arguments: {} });
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.content)).toContain(
-        'sign_out requires the reviewed account-action flow'
-      );
+      expect(response.isError).not.toBe(true);
+      expect(JSON.stringify(response.content)).toContain('Sign-out requires review');
+      expect(prepareSignOut).toHaveBeenCalledWith({});
       expect(signOut).not.toHaveBeenCalled();
     } finally {
       await categoryClient.close();
@@ -132,10 +156,19 @@ describe('standard search and fetch protocol', () => {
       const search = await client.callTool({ name: 'search', arguments: { query: 'Acme' } });
       expect(search.content).toHaveLength(1);
       expect(JSON.parse((search.content[0] as { text: string }).text)).toEqual({
-        results: [expect.objectContaining({ id: 'sheetrow:book:1:2', title: expect.any(String), url: expect.any(String) })],
+        results: [
+          expect.objectContaining({
+            id: 'sheetrow:book:1:2',
+            title: expect.any(String),
+            url: expect.any(String),
+          }),
+        ],
       });
 
-      const fetched = await client.callTool({ name: 'fetch', arguments: { id: 'sheetrow:book:1:2' } });
+      const fetched = await client.callTool({
+        name: 'fetch',
+        arguments: { id: 'sheetrow:book:1:2' },
+      });
       expect(fetched.content).toHaveLength(1);
       expect(JSON.parse((fetched.content[0] as { text: string }).text)).toMatchObject({
         id: 'sheetrow:book:1:2',
@@ -202,7 +235,12 @@ describe('app-only confirmation boundary', () => {
     try {
       const prepared = await client.callTool({
         name: 'prepare_row_change',
-        arguments: { spreadsheetId: 'book', sheetId: 1, operation: 'append', values: { ID: 'A-2' } },
+        arguments: {
+          spreadsheetId: 'book',
+          sheetId: 1,
+          operation: 'append',
+          values: { ID: 'A-2' },
+        },
       });
       expect(JSON.stringify(prepared.content)).not.toContain('app-only-secret-token');
       expect(prepared._meta).toMatchObject({

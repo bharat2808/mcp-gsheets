@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   ReplaceSheetRowsInput,
   RecentChange,
+  PendingVerification,
   SearchHit,
   SpreadsheetRecord,
   WriteAudit,
@@ -91,6 +92,13 @@ export class LocalIndex {
         encrypted_payload TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS write_audits_by_time ON write_audits(applied_at DESC);
+      CREATE TABLE IF NOT EXISTS pending_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recorded_at TEXT NOT NULL,
+        encrypted_payload TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS pending_verifications_by_time
+        ON pending_verifications(recorded_at DESC);
     `);
     const sheetColumns = database.prepare('PRAGMA table_info(sheets)').all() as unknown as Array<{
       name: string;
@@ -110,7 +118,21 @@ export class LocalIndex {
     if (requiresReindex) {
       database.exec("UPDATE spreadsheets SET index_status = 'stale'");
     }
+    const databaseVersion = Number(
+      (database.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)
+        ?.user_version ?? 0
+    );
+    if (databaseVersion < 2) {
+      database.exec('PRAGMA user_version = 2');
+    }
     this.#database = database;
+  }
+
+  getDatabaseVersion(): number {
+    return Number(
+      (this.#db().prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)
+        ?.user_version ?? 0
+    );
   }
 
   close(): void {
@@ -239,6 +261,7 @@ export class LocalIndex {
           DELETE FROM settings;
           DELETE FROM recent_changes;
           DELETE FROM write_audits;
+          DELETE FROM pending_verifications;
         `);
       }
       database
@@ -263,6 +286,7 @@ export class LocalIndex {
         DELETE FROM settings;
         DELETE FROM recent_changes;
         DELETE FROM write_audits;
+        DELETE FROM pending_verifications;
       `);
       database.exec('COMMIT');
     } catch (error) {
@@ -314,6 +338,62 @@ export class LocalIndex {
     return rows.map((row) =>
       decryptJson<WriteAudit>(this.#key, row.encrypted_payload, `write-audit:${row.id}`)
     );
+  }
+
+  recordPendingVerification(pending: PendingVerification): void {
+    const result = this.#db()
+      .prepare('INSERT INTO pending_verifications (recorded_at, encrypted_payload) VALUES (?, ?)')
+      .run(pending.recordedAt, 'pending');
+    const id = Number(result.lastInsertRowid);
+    this.#db()
+      .prepare('UPDATE pending_verifications SET encrypted_payload = ? WHERE id = ?')
+      .run(encryptJson(this.#key, pending, `pending-verification:${id}`), id);
+  }
+
+  getPendingVerifications(): PendingVerification[] {
+    const rows = this.#db()
+      .prepare(
+        'SELECT id, encrypted_payload FROM pending_verifications ORDER BY recorded_at DESC, id DESC'
+      )
+      .all() as unknown as Array<{ id: number; encrypted_payload: string }>;
+    return rows.map((row) =>
+      decryptJson<PendingVerification>(
+        this.#key,
+        row.encrypted_payload,
+        `pending-verification:${row.id}`
+      )
+    );
+  }
+
+  hasPendingVerification(resourceIds: readonly string[]): boolean {
+    const pending = this.getPendingVerifications();
+    if (resourceIds.length === 0) {
+      return pending.length > 0;
+    }
+    const resources = new Set(resourceIds);
+    return pending.some((entry) => entry.affectedResourceIds.some((id) => resources.has(id)));
+  }
+
+  clearPendingVerifications(resourceIds?: readonly string[]): void {
+    if (!resourceIds) {
+      this.#db().prepare('DELETE FROM pending_verifications').run();
+      return;
+    }
+    const resources = new Set(resourceIds);
+    const rows = this.#db()
+      .prepare('SELECT id, encrypted_payload FROM pending_verifications')
+      .all() as unknown as Array<{ id: number; encrypted_payload: string }>;
+    const remove = this.#db().prepare('DELETE FROM pending_verifications WHERE id = ?');
+    for (const row of rows) {
+      const pending = decryptJson<PendingVerification>(
+        this.#key,
+        row.encrypted_payload,
+        `pending-verification:${row.id}`
+      );
+      if (pending.affectedResourceIds.some((id) => resources.has(id))) {
+        remove.run(row.id);
+      }
+    }
   }
 
   getSheetSnapshot(

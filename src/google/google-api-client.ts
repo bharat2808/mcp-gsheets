@@ -3,7 +3,8 @@ import { google } from 'googleapis';
 import { CellValue, IndexedTable } from '../domain/types.js';
 import { DriveFileMetadata } from '../drive/catalog.js';
 import { parseSheetValues } from '../indexing/sheet-parser.js';
-import { ProposalGateway, SheetChangeProposal } from '../proposals/proposal-manager.js';
+import { OperationPreflight } from '../operations/change-workflow.js';
+import { SheetChangeRequest } from '../proposals/proposal-manager.js';
 import { SheetsReadGateway } from '../sync/sync-service.js';
 import { extractSheetName, parseRange } from '../utils/range-helpers.js';
 
@@ -116,7 +117,95 @@ function formatTable(table: NativeTable, sheetTitle: string): IndexedTable {
   };
 }
 
-export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
+function incrementColumn(column: string, offset: number): string {
+  let value = 0;
+  for (const character of column.toUpperCase()) {
+    value = value * 26 + character.charCodeAt(0) - 64;
+  }
+  value += offset;
+  let output = '';
+  while (value > 0) {
+    value -= 1;
+    output = String.fromCharCode(65 + (value % 26)) + output;
+    value = Math.floor(value / 26);
+  }
+  return output;
+}
+
+function expandValueRange(range: string, values: unknown[][]): string {
+  if (range.includes(':') || values.length === 0) {
+    return range;
+  }
+  const match = /^(.*!)?([A-Z]+)(\d+)$/iu.exec(range);
+  if (!match?.[2] || !match[3]) {
+    return range;
+  }
+  const width = Math.max(1, ...values.map((row) => row.length));
+  const endColumn = incrementColumn(match[2], width - 1);
+  const endRow = Number(match[3]) + values.length - 1;
+  return `${match[1] ?? ''}${match[2]}${match[3]}:${endColumn}${endRow}`;
+}
+
+function operationRanges(operation: string, arguments_: Record<string, unknown>): string[] {
+  if (operation === 'batch_update_values') {
+    return Array.isArray(arguments_.data)
+      ? arguments_.data.flatMap((entry) => {
+          const item = entry as { range?: unknown; values?: unknown };
+          return typeof item.range === 'string' && Array.isArray(item.values)
+            ? [expandValueRange(item.range, item.values as unknown[][])]
+            : [];
+        })
+      : [];
+  }
+  if (typeof arguments_.range !== 'string') {
+    return [];
+  }
+  return operation === 'update_values' && Array.isArray(arguments_.values)
+    ? [expandValueRange(arguments_.range, arguments_.values as unknown[][])]
+    : [arguments_.range];
+}
+
+function anyPopulated(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(anyPopulated);
+  }
+  return value !== null && value !== undefined && value !== '';
+}
+
+function normalizedValues(values: unknown): unknown[][] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const rows = values.map((row) => {
+    const cells = Array.isArray(row) ? [...row] : [row];
+    while (cells.length > 0 && !anyPopulated(cells.at(-1))) {
+      cells.pop();
+    }
+    return cells.map((cell) => (cell === null || cell === undefined ? '' : cell));
+  });
+  while (rows.length > 0 && rows.at(-1)?.length === 0) {
+    rows.pop();
+  }
+  return rows;
+}
+
+const EXACT_METADATA_OPERATIONS = new Set([
+  'delete_sheet',
+  'batch_delete_sheets',
+  'delete_rows',
+  'delete_columns',
+  'merge_cells',
+  'unmerge_cells',
+  'update_sheet_properties',
+  'clear_data_validation',
+  'clear_basic_filter',
+  'update_chart',
+  'delete_chart',
+  'update_table',
+  'delete_table',
+]);
+
+export class GoogleSheetsGateway implements SheetsReadGateway {
   #tokens: OAuthTokenSet;
   readonly #oauthClient: InstanceType<typeof google.auth.OAuth2>;
   readonly #sheetsClient: unknown;
@@ -294,6 +383,10 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     if (!selectedFolderIds.includes(folderId)) {
       throw new Error(`Folder ${folderId} is not one of the selected My Drive folders`);
     }
+    return this.validateMyDriveFolder(folderId);
+  }
+
+  async validateMyDriveFolder(folderId: string): Promise<DriveFileMetadata> {
     const folder = await this.#json<DriveFileMetadata & { trashed?: boolean }>(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folderId)}?fields=id%2Cname%2CmimeType%2Cparents%2CdriveId%2CownedByMe%2Ctrashed`
     );
@@ -404,10 +497,15 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
   async moveSpreadsheet(
     spreadsheetId: string,
     folderId: string,
-    selectedFolderIds: readonly string[]
+    selectedFolderIds: readonly string[],
+    allowOutsideSelection = false
   ): Promise<{ spreadsheetId: string; folderId: string; verified: true }> {
     await this.authorizeSpreadsheet(spreadsheetId);
-    await this.validateSelectedMyDriveFolder(folderId, selectedFolderIds);
+    if (allowOutsideSelection) {
+      await this.validateMyDriveFolder(folderId);
+    } else {
+      await this.validateSelectedMyDriveFolder(folderId, selectedFolderIds);
+    }
     await this.#moveSpreadsheetToFolder(spreadsheetId, folderId);
     return { spreadsheetId, folderId, verified: true };
   }
@@ -805,7 +903,191 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     return String(response.version);
   }
 
-  async readRow(proposal: SheetChangeProposal): Promise<Record<string, CellValue>> {
+  async getRevisions(spreadsheetIds: readonly string[]): Promise<Record<string, string>> {
+    return Object.fromEntries(
+      await Promise.all(
+        [...new Set(spreadsheetIds)].map(async (id) => [id, await this.getRevision(id)] as const)
+      )
+    );
+  }
+
+  async readValueRanges(
+    spreadsheetId: string,
+    ranges: readonly string[]
+  ): Promise<Array<{ range: string; values: unknown[][] }>> {
+    if (ranges.length === 0) {
+      return [];
+    }
+    const sheets = this.getSheetsClient({ idempotent: true });
+    const response = await sheets.spreadsheets.values.batchGet({
+      spreadsheetId,
+      ranges: [...ranges],
+      valueRenderOption: 'FORMULA',
+      dateTimeRenderOption: 'FORMATTED_STRING',
+    });
+    const returned = response.data.valueRanges ?? [];
+    return ranges.map((range, index) => ({
+      range,
+      values: returned[index]?.values ?? [],
+    }));
+  }
+
+  async inspectOperation(
+    operation: string,
+    arguments_: Record<string, unknown>,
+    selectedFolderIds: readonly string[]
+  ): Promise<OperationPreflight> {
+    const spreadsheetId =
+      typeof arguments_.spreadsheetId === 'string' ? arguments_.spreadsheetId : undefined;
+    const ranges = operationRanges(operation, arguments_);
+    const valueRanges = spreadsheetId ? await this.readValueRanges(spreadsheetId, ranges) : [];
+    const driveRevisions = spreadsheetId ? await this.getRevisions([spreadsheetId]) : {};
+    const affectedResources: OperationPreflight['affectedResources'] = spreadsheetId
+      ? [
+          { kind: 'spreadsheet', id: spreadsheetId, label: spreadsheetId },
+          ...ranges.map((range) => ({
+            kind: 'range' as const,
+            id: `${spreadsheetId}:${range}`,
+            label: range,
+          })),
+        ]
+      : operation === 'sign_out'
+        ? [{ kind: 'account', id: 'google', label: 'Connected Google account' }]
+        : [];
+    if (typeof arguments_.sheetId === 'number' && spreadsheetId) {
+      affectedResources.push({
+        kind: 'sheet',
+        id: `${spreadsheetId}:${arguments_.sheetId}`,
+        label: `Sheet ${arguments_.sheetId}`,
+      });
+    }
+
+    let gridShrinks = false;
+    let metadataState: unknown;
+    if (EXACT_METADATA_OPERATIONS.has(operation) && spreadsheetId) {
+      const sheets = this.getSheetsClient({ idempotent: true });
+      const metadata = await sheets.spreadsheets.get({
+        spreadsheetId,
+      });
+      metadataState = metadata.data;
+    }
+    if (operation === 'update_sheet_properties' && spreadsheetId) {
+      const metadata = metadataState as { sheets?: any[] } | undefined;
+      const sheet = (metadata?.sheets ?? []).find(
+        (entry: any) => entry.properties?.sheetId === arguments_.sheetId
+      );
+      const current = sheet?.properties?.gridProperties ?? {};
+      const next = (arguments_.gridProperties ?? {}) as {
+        rowCount?: number;
+        columnCount?: number;
+      };
+      gridShrinks =
+        (next.rowCount !== undefined && next.rowCount < (current.rowCount ?? 0)) ||
+        (next.columnCount !== undefined && next.columnCount < (current.columnCount ?? 0));
+    }
+    if (operation === 'move_spreadsheet' && spreadsheetId) {
+      metadataState = await this.#driveFile(spreadsheetId);
+    }
+
+    if (typeof arguments_.chartId === 'number' && spreadsheetId) {
+      affectedResources.push({
+        kind: 'chart',
+        id: `${spreadsheetId}:${arguments_.chartId}`,
+        label: `Chart ${arguments_.chartId}`,
+      });
+    }
+    if (typeof arguments_.tableId === 'string' && spreadsheetId) {
+      affectedResources.push({
+        kind: 'table',
+        id: `${spreadsheetId}:${arguments_.tableId}`,
+        label: `Table ${arguments_.tableId}`,
+      });
+    }
+
+    const valueOperation = [
+      'update_values',
+      'batch_update_values',
+      'append_values',
+      'prepare_row_change',
+    ].includes(operation);
+    const before = valueOperation
+      ? operation === 'batch_update_values'
+        ? valueRanges.map((entry) => ({ range: entry.range, values: entry.values }))
+        : (valueRanges[0]?.values ?? null)
+      : { ranges: valueRanges, metadata: metadataState ?? null };
+    const after =
+      operation === 'batch_update_values' ? arguments_.data : (arguments_.values ?? arguments_);
+    return {
+      affectedResources,
+      preview: { kind: valueOperation ? 'values' : 'exact', before, after },
+      riskInspection: {
+        targetCellsVerifiedEmpty:
+          ranges.length > 0 && valueRanges.every((entry) => !anyPopulated(entry.values)),
+        targetCellsPopulated: valueRanges.some((entry) => anyPopulated(entry.values)),
+        gridShrinks,
+        ...(operation === 'move_spreadsheet'
+          ? {
+              destinationSelected:
+                typeof arguments_.folderId === 'string' &&
+                selectedFolderIds.includes(arguments_.folderId),
+            }
+          : {}),
+      },
+      driveRevisions,
+      state: { valueRanges, metadataState, driveRevisions },
+    };
+  }
+
+  async captureOperationState(
+    operation: string,
+    arguments_: Record<string, unknown>,
+    selectedFolderIds: readonly string[]
+  ): Promise<unknown> {
+    return (await this.inspectOperation(operation, arguments_, selectedFolderIds)).state;
+  }
+
+  async verifyOperation(
+    operation: string,
+    arguments_: Record<string, unknown>,
+    preflight: OperationPreflight
+  ): Promise<boolean> {
+    const spreadsheetId =
+      typeof arguments_.spreadsheetId === 'string' ? arguments_.spreadsheetId : undefined;
+    if (!spreadsheetId) {
+      return operation === 'create_spreadsheet' || operation === 'sign_out';
+    }
+
+    if (operation === 'update_values' || operation === 'batch_update_values') {
+      const ranges = operationRanges(operation, arguments_);
+      const actual = await this.readValueRanges(spreadsheetId, ranges);
+      const expected =
+        operation === 'update_values'
+          ? [arguments_.values]
+          : ((arguments_.data as Array<{ values?: unknown[][] }> | undefined) ?? []).map(
+              (entry) => entry.values ?? []
+            );
+      return (
+        JSON.stringify(actual.map((entry) => normalizedValues(entry.values))) ===
+        JSON.stringify(expected.map((values) => normalizedValues(values)))
+      );
+    }
+
+    const afterRevision = await this.getRevision(spreadsheetId);
+    return afterRevision !== preflight.driveRevisions[spreadsheetId];
+  }
+
+  async revokeGoogleGrant(): Promise<void> {
+    const response = await this.fetcher('https://oauth2.googleapis.com/revoke', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: this.#tokens.refreshToken || this.#tokens.accessToken }),
+    });
+    if (!response.ok) {
+      throw new Error(`Google OAuth grant revocation failed with HTTP ${response.status}`);
+    }
+  }
+
+  async readRow(proposal: SheetChangeRequest): Promise<Record<string, CellValue>> {
     if (!proposal.rowNumber) {
       throw new Error('An update proposal requires a row number');
     }
@@ -819,7 +1101,36 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     return Object.fromEntries(keys.map((key) => [key, row.values[key] ?? null]));
   }
 
-  async apply(proposal: SheetChangeProposal): Promise<{ updatedRange: string; verified: boolean }> {
+  async captureRowChangeState(input: {
+    spreadsheetId: string;
+    sheetId: number;
+    operation: 'append' | 'update';
+    rowNumber?: number;
+    columns?: readonly string[];
+  }): Promise<unknown> {
+    const spreadsheet = await this.readSpreadsheet(input.spreadsheetId);
+    const sheet = spreadsheet.sheets.find((entry) => entry.sheetId === input.sheetId);
+    if (!sheet) {
+      throw new Error(`Sheet ${input.sheetId} no longer exists`);
+    }
+    const parsed = parseSheetValues(sheet.rawValues);
+    if (input.operation === 'append') {
+      return {
+        headers: parsed.headers,
+        lastRowNumber: parsed.rows.at(-1)?.rowNumber ?? 1,
+      };
+    }
+    const row = parsed.rows.find((candidate) => candidate.rowNumber === input.rowNumber);
+    if (!row) {
+      throw new Error(`Row ${input.rowNumber} no longer exists`);
+    }
+    const columns = input.columns ?? Object.keys(row.values);
+    return Object.fromEntries(columns.map((column) => [column, row.values[column] ?? null]));
+  }
+
+  async applyRow(
+    proposal: SheetChangeRequest
+  ): Promise<{ updatedRange: string; verified: boolean }> {
     await this.authorizeSpreadsheet(proposal.spreadsheetId);
     const sheet = await this.#findSheet(proposal);
     const parsed = parseSheetValues(sheet.rawValues);
@@ -887,7 +1198,12 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     return { updatedRange, verified: true };
   }
 
-  async #findSheet(proposal: Pick<SheetChangeProposal, 'spreadsheetId' | 'sheetId'>) {
+  /** Backward-compatible row executor; generalized proposals use applyRow through ChangeWorkflow. */
+  async apply(proposal: SheetChangeRequest): Promise<{ updatedRange: string; verified: boolean }> {
+    return this.applyRow(proposal);
+  }
+
+  async #findSheet(proposal: Pick<SheetChangeRequest, 'spreadsheetId' | 'sheetId'>) {
     const spreadsheet = await this.readSpreadsheet(proposal.spreadsheetId);
     const sheet = spreadsheet.sheets.find((entry) => entry.sheetId === proposal.sheetId);
     if (!sheet) {

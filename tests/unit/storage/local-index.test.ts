@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -219,5 +220,60 @@ describe('LocalIndex', () => {
     expect(index.getRecentChanges()).toEqual([]);
     expect(index.getWriteAudits()).toEqual([]);
     index.close();
+  });
+
+  it('migrates an existing encrypted database without losing catalog or recent-change history', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'gsheets-index-migration-'));
+    tempDirectories.push(directory);
+    const databasePath = join(directory, 'index.sqlite');
+    const key = Buffer.alloc(32, 7);
+    const legacy = new LocalIndex(databasePath, key);
+    legacy.initialize();
+    legacy.upsertSpreadsheet({
+      id: 'book-1',
+      name: 'Accounts',
+      path: '/Accounts',
+      modifiedTime: '',
+      version: '8',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:00:00.000Z',
+    });
+    legacy.recordChanges({
+      spreadsheetId: 'book-1',
+      spreadsheetName: 'Accounts',
+      sheetId: 1,
+      sheetTitle: 'Ledger',
+      detectedAt: '2026-08-05T00:02:00.000Z',
+      changes: [{ kind: 'modified', rows: [2] }],
+    });
+    legacy.close();
+    const raw = new DatabaseSync(databasePath);
+    raw.exec('PRAGMA user_version = 1; DROP TABLE IF EXISTS pending_verifications;');
+    raw.close();
+
+    const migrated = new LocalIndex(databasePath, key);
+    migrated.initialize();
+
+    expect(migrated.getCatalog().map((record) => record.id)).toEqual(['book-1']);
+    expect(migrated.getRecentChanges()).toHaveLength(1);
+    expect(migrated.getDatabaseVersion()).toBe(2);
+    migrated.close();
+  });
+
+  it('persists encrypted pending verification blocks until refresh clears them', () => {
+    const { index, databasePath } = createIndex();
+    index.recordPendingVerification({
+      operation: 'update_values',
+      recordedAt: '2026-08-05T00:03:00.000Z',
+      affectedResourceIds: ['spreadsheet:book-1', 'range:book-1:Plan!A1'],
+      error: 'refresh failed',
+    });
+
+    expect(index.hasPendingVerification(['spreadsheet:book-1'])).toBe(true);
+    expect(index.hasPendingVerification([])).toBe(true);
+    index.clearPendingVerifications(['spreadsheet:book-1']);
+    expect(index.hasPendingVerification(['spreadsheet:book-1'])).toBe(false);
+    index.close();
+    expect(readFileSync(databasePath).includes(Buffer.from('refresh failed'))).toBe(false);
   });
 });

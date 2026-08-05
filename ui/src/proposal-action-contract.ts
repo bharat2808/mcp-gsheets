@@ -6,12 +6,37 @@ export const PROPOSAL_ACTION_TOOLS = {
 
 export function proposalActionSuccessMessage(
   name: string,
-  verified?: boolean
+  verificationState?: 'not_started' | 'verified' | 'applied_verification_pending'
 ): string {
   if (name !== PROPOSAL_ACTION_TOOLS.approve) {
     return 'Proposal updated.';
   }
-  return verified === false
-    ? 'Google accepted the write, but verification differed. Refresh before another action.'
+  return verificationState === 'applied_verification_pending'
+    ? 'Change applied, but verification is pending. Refresh before dependent destructive work.'
     : 'Change applied and verified.';
+}
+
+export function proposalPresentation(proposal: {
+  operation: string;
+  editable: boolean;
+  preview: { kind: 'values' | 'exact' };
+}) {
+  const title = proposal.operation.replaceAll('_', ' ');
+  return {
+    title: title[0]?.toUpperCase() + title.slice(1),
+    editable: proposal.editable && proposal.preview.kind === 'values',
+    previewKind: proposal.preview.kind,
+  } as const;
+}
+
+export function parseEditableProposalValues(
+  draft: string,
+  previewKind: 'values' | 'exact'
+): unknown {
+  if (previewKind !== 'values') throw new Error('This exact proposal is not editable.');
+  try {
+    return JSON.parse(draft) as unknown;
+  } catch {
+    throw new Error('Proposed values must be valid JSON.');
+  }
 }

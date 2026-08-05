@@ -31,7 +31,9 @@ describe('gsheets operation registry', () => {
     ]);
     expect(OPERATIONS.map((operation) => operation.name)).toEqual(PUBLIC_TOOL_NAMES);
     expect(new Set(PUBLIC_TOOL_NAMES).size).toBe(PUBLIC_TOOL_NAMES.length);
-    expect(OPERATIONS.every((operation) => TOOL_CATEGORIES.includes(operation.category))).toBe(true);
+    expect(OPERATIONS.every((operation) => TOOL_CATEGORIES.includes(operation.category))).toBe(
+      true
+    );
   });
 
   it('keeps proposal decisions app-only without removing them from the public registry', () => {
@@ -65,10 +67,26 @@ describe('gsheets operation registry', () => {
     });
 
     expect(executeLegacyOperation).toHaveBeenCalledWith(
+      'append_values',
       expect.any(Function),
       expect.objectContaining({ spreadsheetId: 'book' }),
       { idempotent: false, refreshIndex: true }
     );
+  });
+
+  it('routes sign-out only to reviewed preparation and defaults grant revocation off', async () => {
+    const proposal = { version: 2, id: 'proposal', nonce: 'secret' };
+    const runtime = {
+      prepareSignOut: vi.fn().mockResolvedValue(proposal),
+      confirmationToken: vi.fn().mockReturnValue('secret'),
+      signOut: vi.fn(),
+    };
+    const operation = OPERATIONS.find((candidate) => candidate.name === 'sign_out');
+
+    await operation?.handler(runtime as any, {});
+
+    expect(runtime.prepareSignOut).toHaveBeenCalledWith({});
+    expect(runtime.signOut).not.toHaveBeenCalled();
   });
 
   it('does not classify create-like or structural insert operations as idempotent', () => {
@@ -86,7 +104,9 @@ describe('gsheets operation registry', () => {
     ];
 
     for (const name of neverReplay) {
-      expect(OPERATIONS.find((operation) => operation.name === name)?.annotations.idempotentHint).toBeUndefined();
+      expect(
+        OPERATIONS.find((operation) => operation.name === name)?.annotations.idempotentHint
+      ).toBeUndefined();
     }
   });
 
@@ -129,9 +149,9 @@ describe('gsheets operation registry', () => {
       'clear_basic_filter',
       'sign_out',
     ]) {
-      expect(OPERATIONS.find((operation) => operation.name === name)?.annotations.destructiveHint).toBe(
-        true
-      );
+      expect(
+        OPERATIONS.find((operation) => operation.name === name)?.annotations.destructiveHint
+      ).toBe(true);
     }
   });
 });

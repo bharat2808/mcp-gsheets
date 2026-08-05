@@ -58,15 +58,30 @@ export interface RecentChange {
 }
 
 export interface WriteAudit {
-  proposalId: string;
+  proposalId?: string;
   appliedAt: string;
-  spreadsheetId: string;
-  sheetId: number;
-  sheetTitle: string;
-  operation: 'append' | 'update';
+  spreadsheetId?: string;
+  sheetId?: number;
+  sheetTitle?: string;
+  operation: string;
   rowNumber?: number;
   beforeValues?: Record<string, CellValue>;
-  afterValues: Record<string, CellValue>;
-  updatedRange: string;
-  verified: boolean;
+  afterValues?: Record<string, CellValue>;
+  updatedRange?: string;
+  verified?: boolean;
+  arguments?: Record<string, unknown>;
+  affectedResources?: Array<{ kind: string; id: string; label: string }>;
+  preview?: { kind: string; before: unknown; after: unknown };
+  riskReasons?: string[];
+  approval?: 'direct' | 'reviewed';
+  result?: unknown;
+  verificationState?: 'verified' | 'applied_verification_pending';
+  verificationError?: string;
+}
+
+export interface PendingVerification {
+  operation: string;
+  recordedAt: string;
+  affectedResourceIds: string[];
+  error: string;
 }

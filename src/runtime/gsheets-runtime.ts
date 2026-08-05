@@ -27,10 +27,16 @@ import {
 } from '../google/google-api-client.js';
 import { findDuplicateRow } from '../indexing/rows.js';
 import {
-  ProposalManager,
-  SheetChangeProposal,
+  AffectedResource,
+  ChangeProposal,
   SheetChangeOperation,
+  SheetChangeRequest,
 } from '../proposals/proposal-manager.js';
+import {
+  ChangeWorkflow,
+  ChangeWorkflowOutcome,
+  OperationPreflight,
+} from '../operations/change-workflow.js';
 import { LocalIndex } from '../storage/local-index.js';
 import { RefreshResult, SyncService } from '../sync/sync-service.js';
 import { runWithGoogleSheetsGateway } from '../utils/google-auth.js';
@@ -60,7 +66,7 @@ export class GSheetsRuntime {
   #index: LocalIndex | null = null;
   #client: GoogleSheetsGateway | null = null;
   #sync: SyncService | null = null;
-  #proposals: ProposalManager | null = null;
+  #workflow: ChangeWorkflow | null = null;
   #setup: OAuthSetupServerHandle | null = null;
   #setupUrl: string | null = null;
   #clientId = '';
@@ -166,80 +172,126 @@ export class GSheetsRuntime {
   }
 
   async executeLegacyOperation<T>(
+    operation: string,
     handler: (input: any) => T | Promise<T>,
     input: any,
     policy: { idempotent: boolean; refreshIndex: boolean }
-  ): Promise<T> {
-    const response = await runWithGoogleSheetsGateway(
-      this.#requiredClient(),
-      { idempotent: policy.idempotent },
-      async () => handler(input)
-    );
-    if (policy.refreshIndex && !this.#isErrorToolResponse(response)) {
-      await this.#refreshAfterMutation();
+  ): Promise<T | ChangeProposal | Record<string, unknown>> {
+    const execute = async (arguments_: Record<string, unknown>) => {
+      const response = await runWithGoogleSheetsGateway(
+        this.#requiredClient(),
+        { idempotent: policy.idempotent },
+        async () => handler(arguments_)
+      );
+      if (this.#isErrorToolResponse(response)) {
+        throw new Error(this.#toolResponseError(response));
+      }
+      return response;
+    };
+    if (!policy.refreshIndex) {
+      return execute(input);
     }
-    return response;
+    return this.#outcome(
+      await this.#requiredWorkflow().execute({ operation, arguments: input, execute })
+    ) as T | ChangeProposal | Record<string, unknown>;
   }
 
   async createSpreadsheet(input: CreateSpreadsheetGatewayInput) {
-    const result = await this.#requiredClient().createSpreadsheet(
-      input,
-      this.#requiredIndex().getSelectedFolderIds()
+    return this.#outcome(
+      await this.#requiredWorkflow().execute({
+        operation: 'create_spreadsheet',
+        arguments: input as unknown as Record<string, unknown>,
+        execute: (arguments_) =>
+          this.#requiredClient().createSpreadsheet(
+            arguments_ as unknown as CreateSpreadsheetGatewayInput,
+            this.#requiredIndex().getSelectedFolderIds()
+          ),
+      })
     );
-    await this.#refreshAfterMutation();
-    return result;
   }
 
   async insertColumns(input: InsertColumnsGatewayInput) {
-    const result = await this.#requiredClient().insertColumns(input);
-    await this.#refreshAfterMutation();
-    return result;
+    return this.#outcome(
+      await this.#requiredWorkflow().execute({
+        operation: 'insert_columns',
+        arguments: input as unknown as Record<string, unknown>,
+        execute: (arguments_) =>
+          this.#requiredClient().insertColumns(arguments_ as unknown as InsertColumnsGatewayInput),
+      })
+    );
   }
 
   async moveSpreadsheet(input: { spreadsheetId: string; folderId: string }) {
-    const result = await this.#requiredClient().moveSpreadsheet(
-      input.spreadsheetId,
-      input.folderId,
-      this.#requiredIndex().getSelectedFolderIds()
+    return this.#outcome(
+      await this.#requiredWorkflow().execute({
+        operation: 'move_spreadsheet',
+        arguments: input,
+        execute: (arguments_) => {
+          const selectedFolderIds = this.#requiredIndex().getSelectedFolderIds();
+          const folderId = String(arguments_.folderId);
+          return this.#requiredClient().moveSpreadsheet(
+            String(arguments_.spreadsheetId),
+            folderId,
+            selectedFolderIds,
+            !selectedFolderIds.includes(folderId)
+          );
+        },
+      })
     );
-    await this.#refreshAfterMutation();
-    return result;
   }
 
   async setDataValidation(input: Parameters<GoogleSheetsGateway['setDataValidation']>[0]) {
-    const result = await this.#requiredClient().setDataValidation(input);
-    await this.#refreshAfterMutation();
-    return result;
+    return this.#executeGatewayMutation('set_data_validation', input, (arguments_) =>
+      this.#requiredClient().setDataValidation(arguments_)
+    );
   }
 
   async clearDataValidation(input: Parameters<GoogleSheetsGateway['clearDataValidation']>[0]) {
-    const result = await this.#requiredClient().clearDataValidation(input);
-    await this.#refreshAfterMutation();
-    return result;
+    return this.#executeGatewayMutation('clear_data_validation', input, (arguments_) =>
+      this.#requiredClient().clearDataValidation(arguments_)
+    );
   }
 
   async setBasicFilter(input: Parameters<GoogleSheetsGateway['setBasicFilter']>[0]) {
-    const result = await this.#requiredClient().setBasicFilter(input);
-    await this.#refreshAfterMutation();
-    return result;
+    return this.#executeGatewayMutation('set_basic_filter', input, (arguments_) =>
+      this.#requiredClient().setBasicFilter(arguments_)
+    );
   }
 
   async clearBasicFilter(input: Parameters<GoogleSheetsGateway['clearBasicFilter']>[0]) {
-    const result = await this.#requiredClient().clearBasicFilter(input);
-    await this.#refreshAfterMutation();
-    return result;
+    return this.#executeGatewayMutation('clear_basic_filter', input, (arguments_) =>
+      this.#requiredClient().clearBasicFilter(arguments_)
+    );
   }
 
-  async signOut(): Promise<{ signedOut: true }> {
+  async signOut(
+    options: { revokeGoogleGrant?: boolean } = {}
+  ): Promise<{ signedOut: true; grantRevoked: boolean }> {
     if (this.#refreshPromise) {
       await this.#refreshPromise.catch(() => undefined);
     }
+    if (options.revokeGoogleGrant === true) {
+      await this.#requiredClient().revokeGoogleGrant();
+    }
     this.#disconnect();
     await this.#vault.deleteTokens();
+    this.#requiredIndex().clearAccountData();
     this.#missingScopes = [];
     this.#lastRefresh = null;
     this.#lastError = 'Signed out. Reconnect from the local setup URL.';
-    return { signedOut: true };
+    return { signedOut: true, grantRevoked: options.revokeGoogleGrant === true };
+  }
+
+  async prepareSignOut(input: { revokeGoogleGrant?: boolean } = {}) {
+    return this.#outcome(
+      await this.#requiredWorkflow().execute({
+        operation: 'sign_out',
+        arguments: { revokeGoogleGrant: input.revokeGoogleGrant ?? false },
+        execute: (arguments_) =>
+          this.signOut({ revokeGoogleGrant: arguments_.revokeGoogleGrant === true }),
+        refresh: false,
+      })
+    );
   }
 
   #isErrorToolResponse(value: unknown): boolean {
@@ -252,12 +304,12 @@ export class GSheetsRuntime {
     );
   }
 
-  async #refreshAfterMutation(): Promise<void> {
-    try {
-      await this.refresh();
-    } catch (error) {
-      this.#lastError = `Google change applied, but index refresh failed: ${error instanceof Error ? error.message : String(error)}`;
-    }
+  #toolResponseError(value: unknown): string {
+    const content = (value as { content?: Array<{ text?: unknown }> }).content ?? [];
+    return (
+      content.flatMap((entry) => (typeof entry.text === 'string' ? [entry.text] : [])).join('\n') ||
+      'Google operation failed'
+    );
   }
 
   async refresh(): Promise<RefreshResult> {
@@ -270,6 +322,7 @@ export class GSheetsRuntime {
     this.#refreshPromise = this.#sync.refresh(this.#requiredIndex().getSelectedFolderIds());
     try {
       this.#lastRefresh = await this.#refreshPromise;
+      this.#requiredIndex().clearPendingVerifications();
       this.#lastError = null;
       return this.#lastRefresh;
     } catch (error) {
@@ -280,7 +333,7 @@ export class GSheetsRuntime {
     }
   }
 
-  async prepare(input: PrepareChangeInput): Promise<SheetChangeProposal> {
+  async prepare(input: PrepareChangeInput): Promise<ChangeProposal> {
     const client = this.#requiredClient();
     let details = this.explore(input.spreadsheetId);
     const baseRevision = await client.getRevision(input.spreadsheetId);
@@ -345,7 +398,7 @@ export class GSheetsRuntime {
         }
       }
     }
-    return this.#requiredProposals().prepare({
+    const rowRequest: SheetChangeRequest = {
       ...input,
       spreadsheetName: details.spreadsheet.name,
       spreadsheetPath: details.spreadsheet.path,
@@ -353,48 +406,82 @@ export class GSheetsRuntime {
       baseRevision,
       ...(expectedValues ? { expectedValues } : {}),
       ...(displayBeforeValues ? { displayBeforeValues } : {}),
+    };
+    const arguments_: Record<string, unknown> = structuredClone(input) as unknown as Record<
+      string,
+      unknown
+    >;
+    const preflightState = await client.captureRowChangeState({
+      spreadsheetId: input.spreadsheetId,
+      sheetId: input.sheetId,
+      operation: input.operation,
+      ...(input.rowNumber ? { rowNumber: input.rowNumber } : {}),
+      columns: Object.keys(input.values),
     });
+    const resources: AffectedResource[] = [
+      {
+        kind: 'spreadsheet',
+        id: input.spreadsheetId,
+        label: details.spreadsheet.name,
+      },
+      {
+        kind: 'sheet',
+        id: `${input.spreadsheetId}:${input.sheetId}`,
+        label: sheet.title,
+      },
+    ];
+    if (input.rowNumber) {
+      resources.push({
+        kind: 'range',
+        id: `${input.spreadsheetId}:${input.sheetId}:${input.rowNumber}`,
+        label: `${sheet.title} row ${input.rowNumber}`,
+      });
+    }
+    const preflight: OperationPreflight = {
+      affectedResources: resources,
+      preview: {
+        kind: 'values',
+        before: displayBeforeValues ?? expectedValues ?? null,
+        after: input.values,
+      },
+      riskInspection: {},
+      driveRevisions: { [input.spreadsheetId]: baseRevision },
+      state: preflightState,
+    };
+    const outcome = await this.#requiredWorkflow().execute({
+      operation: 'prepare_row_change',
+      arguments: arguments_,
+      preflight,
+      execute: async (editedArguments) =>
+        client.applyRow({
+          ...rowRequest,
+          values: editedArguments.values as Record<string, CellValue>,
+        }),
+    });
+    if (outcome.kind !== 'proposal') {
+      throw new Error('Row changes must always produce a reviewed proposal');
+    }
+    return outcome.proposal;
   }
 
   review(id: string) {
-    return this.#requiredProposals().review(id);
+    return this.#requiredWorkflow().review(id);
   }
 
   confirmationToken(id: string): string {
-    return this.#requiredProposals().confirmationToken(id);
+    return this.#requiredWorkflow().confirmationToken(id);
   }
 
-  edit(id: string, values: Record<string, CellValue>) {
-    return this.#requiredProposals().edit(id, values);
+  edit(id: string, values: unknown) {
+    return this.#requiredWorkflow().edit(id, values);
   }
 
   async approve(id: string, confirmationToken: string) {
-    const manager = this.#requiredProposals();
-    manager.recordVisualConfirmation(id, confirmationToken);
-    const proposal = await manager.approve(id);
-    this.#requiredIndex().recordWriteAudit({
-      proposalId: proposal.id,
-      appliedAt: new Date().toISOString(),
-      spreadsheetId: proposal.spreadsheetId,
-      sheetId: proposal.sheetId,
-      sheetTitle: proposal.sheetTitle,
-      operation: proposal.operation,
-      ...(proposal.rowNumber ? { rowNumber: proposal.rowNumber } : {}),
-      ...(proposal.expectedValues ? { beforeValues: proposal.expectedValues } : {}),
-      afterValues: proposal.values,
-      updatedRange: proposal.result?.updatedRange ?? 'unknown',
-      verified: proposal.result?.verified === true,
-    });
-    try {
-      await this.refresh();
-    } catch (error) {
-      this.#lastError = `Write applied, but index refresh failed: ${error instanceof Error ? error.message : String(error)}`;
-    }
-    return proposal;
+    return this.#requiredWorkflow().approve(id, confirmationToken);
   }
 
   cancel(id: string) {
-    return this.#requiredProposals().cancel(id);
+    return this.#requiredWorkflow().cancel(id);
   }
 
   async close(): Promise<void> {
@@ -445,7 +532,73 @@ export class GSheetsRuntime {
     this.#missingScopes = [];
     this.#client = client;
     this.#sync = new SyncService(this.#requiredIndex(), this.#client, this.#client);
-    this.#proposals = new ProposalManager(this.#client);
+    this.#workflow = new ChangeWorkflow({
+      gateway: {
+        inspect: (operation, arguments_) =>
+          client.inspectOperation(
+            operation,
+            arguments_,
+            this.#requiredIndex().getSelectedFolderIds()
+          ),
+        getRevisions: (proposal) =>
+          client.getRevisions(
+            proposal.affectedResources
+              .filter((resource) => resource.kind === 'spreadsheet')
+              .map((resource) => resource.id)
+          ),
+        captureState: (proposal) => {
+          if (proposal.operation === 'prepare_row_change') {
+            const arguments_ = proposal.arguments as unknown as PrepareChangeInput;
+            const after = proposal.preview.after as Record<string, CellValue>;
+            return client.captureRowChangeState({
+              spreadsheetId: arguments_.spreadsheetId,
+              sheetId: arguments_.sheetId,
+              operation: arguments_.operation,
+              ...(arguments_.rowNumber ? { rowNumber: arguments_.rowNumber } : {}),
+              columns: Object.keys(after),
+            });
+          }
+          return client.captureOperationState(
+            proposal.operation,
+            proposal.arguments,
+            this.#requiredIndex().getSelectedFolderIds()
+          );
+        },
+        verify: (operation, arguments_, result, preflight) => {
+          if (operation === 'prepare_row_change') {
+            return Promise.resolve(
+              Boolean(
+                result &&
+                typeof result === 'object' &&
+                (result as { verified?: unknown }).verified === true
+              )
+            );
+          }
+          if (operation === 'move_spreadsheet') {
+            return Promise.resolve(
+              Boolean(
+                result &&
+                typeof result === 'object' &&
+                (result as { verified?: unknown }).verified === true
+              )
+            );
+          }
+          if (operation === 'create_spreadsheet') {
+            return Promise.resolve(
+              Boolean(
+                result &&
+                typeof result === 'object' &&
+                typeof (result as { spreadsheetId?: unknown }).spreadsheetId === 'string' &&
+                (result as { partialCreation?: unknown }).partialCreation !== true
+              )
+            );
+          }
+          return client.verifyOperation(operation, arguments_, preflight);
+        },
+      },
+      auditStore: this.#requiredIndex(),
+      refresh: async () => this.refresh(),
+    });
     try {
       await this.refresh();
     } catch (error) {
@@ -561,7 +714,7 @@ export class GSheetsRuntime {
     }
     this.#client = null;
     this.#sync = null;
-    this.#proposals = null;
+    this.#workflow = null;
   }
 
   #configPath(): string {
@@ -582,10 +735,38 @@ export class GSheetsRuntime {
     return this.#client;
   }
 
-  #requiredProposals(): ProposalManager {
-    if (!this.#proposals) {
+  #requiredWorkflow(): ChangeWorkflow {
+    if (!this.#workflow) {
       throw new Error('Connect Google first');
     }
-    return this.#proposals;
+    return this.#workflow;
+  }
+
+  async #executeGatewayMutation<T extends Record<string, unknown>>(
+    operation: string,
+    input: T,
+    execute: (arguments_: T) => Promise<unknown>
+  ) {
+    return this.#outcome(
+      await this.#requiredWorkflow().execute({
+        operation,
+        arguments: input,
+        execute: (arguments_) => execute(arguments_ as T),
+      })
+    );
+  }
+
+  #outcome(outcome: ChangeWorkflowOutcome): unknown {
+    if (outcome.kind === 'proposal') {
+      return outcome.proposal;
+    }
+    if (outcome.data && typeof outcome.data === 'object' && !Array.isArray(outcome.data)) {
+      return {
+        ...(outcome.data as Record<string, unknown>),
+        verificationState: outcome.verificationState,
+        ...(outcome.verificationError ? { verificationError: outcome.verificationError } : {}),
+      };
+    }
+    return outcome;
   }
 }

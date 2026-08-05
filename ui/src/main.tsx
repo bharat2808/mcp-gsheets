@@ -6,40 +6,47 @@ import {
   useHostStyleVariables,
 } from '@modelcontextprotocol/ext-apps/react';
 
-import { PROPOSAL_ACTION_TOOLS, proposalActionSuccessMessage } from './proposal-action-contract.js';
+import {
+  parseEditableProposalValues,
+  PROPOSAL_ACTION_TOOLS,
+  proposalActionSuccessMessage,
+  proposalPresentation,
+} from './proposal-action-contract.js';
 import './styles.css';
 
-type CellValue = string | number | boolean | null;
 interface Proposal {
+  version: 2;
   id: string;
-  spreadsheetId: string;
-  spreadsheetName: string;
-  spreadsheetPath: string;
-  sheetTitle: string;
-  operation: 'append' | 'update';
-  rowNumber?: number;
-  values: Record<string, CellValue>;
-  expectedValues?: Record<string, CellValue>;
-  displayBeforeValues?: Record<string, CellValue>;
-  status: 'pending' | 'applied' | 'cancelled';
+  operation: string;
+  arguments: Record<string, unknown>;
+  affectedResources: Array<{ kind: string; id: string; label: string }>;
+  preview: { kind: 'values' | 'exact'; before: unknown; after: unknown };
+  riskReasons: string[];
+  editable: boolean;
+  status: 'pending' | 'applied' | 'applied_verification_pending' | 'cancelled';
+  verificationState: 'not_started' | 'verified' | 'applied_verification_pending';
   expiresAt: string;
-  result?: { updatedRange: string; verified?: boolean };
+  result?: { data: unknown; verificationError?: string };
 }
 
 function proposalFrom(value: unknown): Proposal | null {
   if (!value || typeof value !== 'object') return null;
   const container = value as { data?: unknown };
   const candidate = (container.data ?? value) as Partial<Proposal>;
-  return typeof candidate.id === 'string' && typeof candidate.values === 'object'
+  return candidate.version === 2 && typeof candidate.id === 'string' && candidate.preview
     ? (candidate as Proposal)
     : null;
+}
+
+function pretty(value: unknown): string {
+  return JSON.stringify(value, null, 2) ?? 'null';
 }
 
 function ReviewApp() {
   useHostStyleVariables();
   useDocumentTheme();
   const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [draft, setDraft] = useState<Record<string, CellValue>>({});
+  const [draft, setDraft] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [confirmationToken, setConfirmationToken] = useState('');
   const [busy, setBusy] = useState(false);
@@ -52,7 +59,7 @@ function ReviewApp() {
         const next = proposalFrom(params.structuredContent);
         if (next) {
           setProposal(next);
-          setDraft(next.values);
+          setDraft(pretty(next.preview.after));
           setConfirmed(false);
         }
         const token = params._meta?.['gsheets/confirmationToken'];
@@ -65,6 +72,7 @@ function ReviewApp() {
     () => (proposal ? new Date(proposal.expiresAt).toLocaleTimeString() : ''),
     [proposal]
   );
+  const presentation = proposal ? proposalPresentation(proposal) : null;
 
   async function call(name: string, arguments_: Record<string, unknown>) {
     if (!app) return;
@@ -76,11 +84,11 @@ function ReviewApp() {
       const next = proposalFrom(response.structuredContent);
       if (next) {
         setProposal(next);
-        setDraft(next.values);
+        setDraft(pretty(next.preview.after));
       }
       const token = response._meta?.['gsheets/confirmationToken'];
       if (typeof token === 'string') setConfirmationToken(token);
-      setMessage(proposalActionSuccessMessage(name, next?.result?.verified));
+      setMessage(proposalActionSuccessMessage(name, next?.verificationState));
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -101,10 +109,10 @@ function ReviewApp() {
         <p>Connecting to GSheets…</p>
       </main>
     );
-  if (!proposal)
+  if (!proposal || !presentation)
     return (
       <main>
-        <h1>Review Sheet change</h1>
+        <h1>Review change</h1>
         <p>Waiting for a proposal…</p>
       </main>
     );
@@ -114,62 +122,45 @@ function ReviewApp() {
       <header>
         <div>
           <span className="eyebrow">Google Sheets</span>
-          <h1>
-            {proposal.operation === 'append' ? 'Append row' : `Update row ${proposal.rowNumber}`}
-          </h1>
+          <h1>{presentation.title}</h1>
         </div>
-        <span className={`status ${proposal.status}`}>{proposal.status}</span>
+        <span className={`status ${proposal.status}`}>{proposal.status.replaceAll('_', ' ')}</span>
       </header>
       <p className="location">
-        {proposal.spreadsheetName} → {proposal.sheetTitle}
-        {proposal.rowNumber ? ` → row ${proposal.rowNumber}` : ''} · expires at {expires}
+        {proposal.affectedResources.map((resource) => resource.label).join(' → ')} · expires at{' '}
+        {expires}
       </p>
-      <p className="source">
-        Source: {proposal.spreadsheetPath} · Google file {proposal.spreadsheetId}
-      </p>
+      <section className="risks" aria-label="Why review is required">
+        <h2>Why this needs review</h2>
+        <ul>
+          {proposal.riskReasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      </section>
       <section>
-        <div className="grid heading">
-          <span>Column</span>
-          <span>Current</span>
-          <span>Proposed</span>
-        </div>
-        {Object.entries(draft).map(([key, value]) => (
-          <div className="grid" key={key}>
-            <strong>{key}</strong>
-            <span className="old">
-              {String(proposal.displayBeforeValues?.[key] ?? proposal.expectedValues?.[key] ?? '—')}
-            </span>
-            {typeof value === 'boolean' ? (
-              <select
-                aria-label={`Proposed ${key}`}
-                value={String(value)}
+        <div className="preview-grid">
+          <div>
+            <h2>Before</h2>
+            <pre>{pretty(proposal.preview.before)}</pre>
+          </div>
+          <div>
+            <h2>After</h2>
+            {presentation.editable ? (
+              <textarea
+                aria-label="Proposed values"
+                value={draft}
+                rows={12}
                 onChange={(event) => {
-                  setDraft({ ...draft, [key]: event.target.value === 'true' });
-                  setConfirmed(false);
-                }}
-              >
-                <option value="true">True</option>
-                <option value="false">False</option>
-              </select>
-            ) : (
-              <input
-                aria-label={`Proposed ${key}`}
-                type={typeof value === 'number' ? 'number' : 'text'}
-                value={value === null ? '' : String(value)}
-                onChange={(event) => {
-                  const nextValue =
-                    typeof value === 'number'
-                      ? event.target.value === ''
-                        ? null
-                        : Number(event.target.value)
-                      : event.target.value;
-                  setDraft({ ...draft, [key]: nextValue });
+                  setDraft(event.target.value);
                   setConfirmed(false);
                 }}
               />
+            ) : (
+              <pre>{pretty(proposal.preview.after)}</pre>
             )}
           </div>
-        ))}
+        </div>
       </section>
       {proposal.status === 'pending' && (
         <>
@@ -179,7 +170,7 @@ function ReviewApp() {
               checked={confirmed}
               onChange={(event) => setConfirmed(event.target.checked)}
             />{' '}
-            I reviewed every value and want to apply this exact change.
+            I reviewed the before and after state and want to apply this exact change.
           </label>
           <div className="actions">
             <button
@@ -189,25 +180,39 @@ function ReviewApp() {
             >
               Cancel
             </button>
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={() =>
-                call(PROPOSAL_ACTION_TOOLS.edit, { proposalId: proposal.id, values: draft })
-              }
-            >
-              Save edits
-            </button>
+            {presentation.editable && (
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => {
+                  try {
+                    const values = parseEditableProposalValues(draft, proposal.preview.kind);
+                    void call(PROPOSAL_ACTION_TOOLS.edit, { proposalId: proposal.id, values });
+                  } catch (caught) {
+                    setMessage(caught instanceof Error ? caught.message : String(caught));
+                  }
+                }}
+              >
+                Save edits
+              </button>
+            )}
             <button
               disabled={busy || !confirmed || !confirmationToken}
               onClick={() =>
                 call(PROPOSAL_ACTION_TOOLS.approve, { proposalId: proposal.id, confirmationToken })
               }
             >
-              Apply to Google Sheets
+              Apply change
             </button>
           </div>
         </>
+      )}
+      {proposal.verificationState === 'applied_verification_pending' && (
+        <p className="message pending" role="alert">
+          Applied, but verification is pending. Dependent destructive work is blocked until refresh
+          succeeds.
+          {proposal.result?.verificationError ? ` ${proposal.result.verificationError}` : ''}
+        </p>
       )}
       {message && (
         <p className="message" role="status">

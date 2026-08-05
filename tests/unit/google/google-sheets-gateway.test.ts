@@ -16,15 +16,51 @@ const TOKENS = {
 };
 
 describe('GoogleSheetsGateway retained-handler context', () => {
-  it('constructs retained clients with the Desktop OAuth credential', () => {
-    const sheetsClient = { spreadsheets: {} };
-    const sheets = vi.spyOn(google, 'sheets').mockReturnValue(sheetsClient as any);
+  it('expands flexible value ranges and verifies every target cell was empty before direct write', async () => {
+    const batchGet = vi.fn().mockResolvedValue({
+      data: { valueRanges: [{ range: 'Plan!A2:B3', values: [] }] },
+    });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ version: '7' }), { status: 200 }));
     const gateway = new GoogleSheetsGateway(
       TOKENS,
       'client-id',
       'client-secret',
-      vi.fn()
+      vi.fn(),
+      fetcher,
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { values: { batchGet } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
     );
+
+    const preflight = await gateway.inspectOperation(
+      'update_values',
+      {
+        spreadsheetId: 'book',
+        range: 'Plan!A2',
+        values: [
+          ['a', 'b'],
+          ['c', 'd'],
+        ],
+      },
+      []
+    );
+
+    expect(batchGet).toHaveBeenCalledWith(
+      expect.objectContaining({ spreadsheetId: 'book', ranges: ['Plan!A2:B3'] }),
+      { retry: false }
+    );
+    expect(preflight.riskInspection.targetCellsVerifiedEmpty).toBe(true);
+    expect(preflight.preview).toMatchObject({ kind: 'values', before: [] });
+  });
+
+  it('constructs retained clients with the Desktop OAuth credential', () => {
+    const sheetsClient = { spreadsheets: {} };
+    const sheets = vi.spyOn(google, 'sheets').mockReturnValue(sheetsClient as any);
+    const gateway = new GoogleSheetsGateway(TOKENS, 'client-id', 'client-secret', vi.fn());
 
     const client = gateway.getSheetsClient({ idempotent: true });
 
@@ -48,10 +84,8 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       { sheetsClient: { spreadsheets: { get } } as any, authorizeSpreadsheet: async () => {} }
     );
 
-    const response = await runWithGoogleSheetsGateway(
-      gateway,
-      { idempotent: true },
-      async () => (await getAuthenticatedClient()).spreadsheets.get({ spreadsheetId: 'book' })
+    const response = await runWithGoogleSheetsGateway(gateway, { idempotent: true }, async () =>
+      (await getAuthenticatedClient()).spreadsheets.get({ spreadsheetId: 'book' })
     );
 
     expect(response.data).toEqual({ spreadsheetId: 'book' });
@@ -71,13 +105,15 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       vi.fn(),
       fetch,
       Date.now,
-      { sheetsClient: { spreadsheets: { get } } as any, sleep, authorizeSpreadsheet: async () => {} }
+      {
+        sheetsClient: { spreadsheets: { get } } as any,
+        sleep,
+        authorizeSpreadsheet: async () => {},
+      }
     );
 
-    const response = await runWithGoogleSheetsGateway(
-      gateway,
-      { idempotent: true },
-      async () => (await getAuthenticatedClient()).spreadsheets.get({ spreadsheetId: 'book' })
+    const response = await runWithGoogleSheetsGateway(gateway, { idempotent: true }, async () =>
+      (await getAuthenticatedClient()).spreadsheets.get({ spreadsheetId: 'book' })
     );
 
     expect(response.data).toEqual({ spreadsheetId: 'book' });
@@ -94,7 +130,10 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       vi.fn(),
       fetch,
       Date.now,
-      { sheetsClient: { spreadsheets: { values: { append } } } as any, authorizeSpreadsheet: async () => {} }
+      {
+        sheetsClient: { spreadsheets: { values: { append } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
     );
 
     await expect(
@@ -124,18 +163,14 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     );
 
     await expect(gateway.getAccountIdentity()).resolves.toBe('account-permission-1');
-    expect(String(fetcher.mock.calls[0]?.[0])).toContain('/drive/v3/about?fields=user%28permissionId%29');
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain(
+      '/drive/v3/about?fields=user%28permissionId%29'
+    );
   });
 
   it('rejects folder targets outside the selected My Drive folders before making a request', async () => {
     const fetcher = vi.fn();
-    const gateway = new GoogleSheetsGateway(
-      TOKENS,
-      'client-id',
-      'client-secret',
-      vi.fn(),
-      fetcher
-    );
+    const gateway = new GoogleSheetsGateway(TOKENS, 'client-id', 'client-secret', vi.fn(), fetcher);
 
     await expect(
       gateway.validateSelectedMyDriveFolder('unselected-folder', ['selected-folder'])
@@ -156,13 +191,7 @@ describe('GoogleSheetsGateway retained-handler context', () => {
         { status: 200 }
       )
     );
-    const gateway = new GoogleSheetsGateway(
-      TOKENS,
-      'client-id',
-      'client-secret',
-      vi.fn(),
-      fetcher
-    );
+    const gateway = new GoogleSheetsGateway(TOKENS, 'client-id', 'client-secret', vi.fn(), fetcher);
 
     await expect(
       gateway.validateSelectedMyDriveFolder('shared-folder', ['shared-folder'])
@@ -231,13 +260,7 @@ describe('GoogleSheetsGateway retained-handler context', () => {
           { status: 200 }
         )
       );
-    const gateway = new GoogleSheetsGateway(
-      TOKENS,
-      'client-id',
-      'client-secret',
-      vi.fn(),
-      fetcher
-    );
+    const gateway = new GoogleSheetsGateway(TOKENS, 'client-id', 'client-secret', vi.fn(), fetcher);
 
     const result = await gateway.createSpreadsheet(
       {
@@ -278,21 +301,51 @@ describe('GoogleSheetsGateway retained-handler context', () => {
   it('returns the created spreadsheet ID when folder placement cannot be completed', async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 'folder-1', name: 'Finance', mimeType: 'application/vnd.google-apps.folder',
-        parents: ['root-id'], ownedByMe: true,
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 'root-id', name: 'My Drive', mimeType: 'application/vnd.google-apps.folder',
-        parents: [], ownedByMe: true,
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        spreadsheetId: 'created-book', properties: { title: 'Created once' },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 'created-book', name: 'Created once',
-        mimeType: 'application/vnd.google-apps.spreadsheet', parents: ['root-id'], ownedByMe: true,
-      }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'folder-1',
+            name: 'Finance',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: ['root-id'],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'root-id',
+            name: 'My Drive',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            spreadsheetId: 'created-book',
+            properties: { title: 'Created once' },
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'created-book',
+            name: 'Created once',
+            mimeType: 'application/vnd.google-apps.spreadsheet',
+            parents: ['root-id'],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
+      )
       .mockResolvedValueOnce(new Response('{}', { status: 503 }));
     const gateway = new GoogleSheetsGateway(TOKENS, 'client-id', 'client-secret', vi.fn(), fetcher);
 
@@ -347,27 +400,50 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({
-          id: 'folder-1', name: 'Finance', mimeType: 'application/vnd.google-apps.folder',
-          parents: ['root-id'], ownedByMe: true,
-        }), { status: 200 })
+        new Response(
+          JSON.stringify({
+            id: 'folder-1',
+            name: 'Finance',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: ['root-id'],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({
-          id: 'root-id', name: 'My Drive', mimeType: 'application/vnd.google-apps.folder',
-          parents: [], ownedByMe: true,
-        }), { status: 200 })
+        new Response(
+          JSON.stringify({
+            id: 'root-id',
+            name: 'My Drive',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({
-          id: 'book', name: 'Book', mimeType: 'application/vnd.google-apps.spreadsheet',
-          parents: ['root-id'], ownedByMe: true,
-        }), { status: 200 })
+        new Response(
+          JSON.stringify({
+            id: 'book',
+            name: 'Book',
+            mimeType: 'application/vnd.google-apps.spreadsheet',
+            parents: ['root-id'],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
       )
       .mockResolvedValueOnce(new Response('{}', { status: 503 }));
     const sleep = vi.fn();
     const gateway = new GoogleSheetsGateway(
-      TOKENS, 'client-id', 'client-secret', vi.fn(), fetcher, Date.now,
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      fetcher,
+      Date.now,
       { sleep, authorizeSpreadsheet: async () => {} }
     );
 
@@ -382,17 +458,17 @@ describe('GoogleSheetsGateway retained-handler context', () => {
 
   it('rejects moving a Shared Drive spreadsheet', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            id: 'shared-book',
-            name: 'Shared workbook',
-            mimeType: 'application/vnd.google-apps.spreadsheet',
-            parents: ['shared-root'],
-            driveId: 'shared-drive-1',
-          }),
-          { status: 200 }
-        )
-      );
+      new Response(
+        JSON.stringify({
+          id: 'shared-book',
+          name: 'Shared workbook',
+          mimeType: 'application/vnd.google-apps.spreadsheet',
+          parents: ['shared-root'],
+          driveId: 'shared-drive-1',
+        }),
+        { status: 200 }
+      )
+    );
     const gateway = new GoogleSheetsGateway(
       TOKENS,
       'client-id',
@@ -403,9 +479,9 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       { getSelectedFolderIds: () => ['folder-1'] }
     );
 
-    await expect(
-      gateway.moveSpreadsheet('shared-book', 'folder-1', ['folder-1'])
-    ).rejects.toThrow('Shared Drive spreadsheets are not supported');
+    await expect(gateway.moveSpreadsheet('shared-book', 'folder-1', ['folder-1'])).rejects.toThrow(
+      'Shared Drive spreadsheets are not supported'
+    );
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
@@ -502,8 +578,7 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     expect(batchUpdate.mock.calls[0]?.[0].requestBody.requests[1]).toEqual({
       pasteData: {
         coordinate: { sheetId: 7, rowIndex: 0, columnIndex: 0 },
-        data:
-          '"001","TRUE","08/05/2026","=SUM(1,2)","comma,value","quote""value","line1\nline2"',
+        data: '"001","TRUE","08/05/2026","=SUM(1,2)","comma,value","quote""value","line1\nline2"',
         type: 'PASTE_NORMAL',
         delimiter: ',',
       },

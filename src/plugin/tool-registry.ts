@@ -2,6 +2,7 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { GSheetsRuntime } from '../runtime/gsheets-runtime.js';
+import { ChangeProposal, publicChangeProposal } from '../proposals/proposal-manager.js';
 import * as legacyTools from '../tools/index.js';
 
 export const TOOL_CATEGORIES = [
@@ -48,6 +49,28 @@ function result(data: unknown, metadata?: Record<string, unknown>) {
     structuredContent: { data },
     ...(metadata ? { _meta: metadata } : {}),
   };
+}
+
+function isChangeProposal(value: unknown): value is ChangeProposal {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as { version?: unknown }).version === 2 &&
+    typeof (value as { nonce?: unknown }).nonce === 'string'
+  );
+}
+
+function proposalResult(runtime: GSheetsRuntime, proposal: ChangeProposal, includeNonce = true) {
+  return result(
+    publicChangeProposal(proposal),
+    includeNonce
+      ? { 'gsheets/confirmationToken': runtime.confirmationToken(proposal.id) }
+      : undefined
+  );
+}
+
+function operationResult(runtime: GSheetsRuntime, value: unknown) {
+  return isChangeProposal(value) ? proposalResult(runtime, value) : result(value);
 }
 
 function normalizedName(name: string): string {
@@ -150,11 +173,18 @@ function legacyOperation(
       destructive: options.destructive,
       idempotent: options.idempotent,
     }),
-    handler: (runtime, input) =>
-      runtime.executeLegacyOperation(handler, input, {
-        idempotent: options.idempotent === true,
-        refreshIndex: options.readOnly !== true,
-      }),
+    handler: async (runtime, input) => {
+      const output = await runtime.executeLegacyOperation(
+        normalizedName(tool.name),
+        handler,
+        input,
+        {
+          idempotent: options.idempotent === true,
+          refreshIndex: options.readOnly !== true,
+        }
+      );
+      return isChangeProposal(output) ? proposalResult(runtime, output) : output;
+    },
   };
 }
 
@@ -281,9 +311,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     meta: { ...reviewMeta, 'ui/resourceUri': UI_URI },
     handler: async (runtime, input) => {
       const proposal = await runtime.prepare(input);
-      return result(proposal, {
-        'gsheets/confirmationToken': runtime.confirmationToken(proposal.id),
-      });
+      return proposalResult(runtime, proposal);
     },
   },
   {
@@ -297,9 +325,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     meta: { ...reviewMeta, 'ui/resourceUri': UI_URI },
     handler: (runtime, { proposalId }) => {
       const proposal = runtime.review(proposalId);
-      return result(proposal, {
-        'gsheets/confirmationToken': runtime.confirmationToken(proposal.id),
-      });
+      return proposalResult(runtime, proposal);
     },
   },
   {
@@ -309,14 +335,12 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     category: 'core',
     readOnly: false,
     appOnly: true,
-    inputSchema: { proposalId: z.string().uuid(), values: rowValues },
+    inputSchema: { proposalId: z.string().uuid(), values: z.any() },
     annotations: annotations({ readOnly: true, openWorld: false }),
     meta: { ...appOnlyMeta, 'ui/resourceUri': UI_URI },
     handler: (runtime, { proposalId, values }) => {
       const proposal = runtime.edit(proposalId, values);
-      return result(proposal, {
-        'gsheets/confirmationToken': runtime.confirmationToken(proposal.id),
-      });
+      return proposalResult(runtime, proposal);
     },
   },
   {
@@ -327,10 +351,10 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     readOnly: false,
     appOnly: true,
     inputSchema: { proposalId: z.string().uuid(), confirmationToken: z.string().min(32) },
-    annotations: annotations({ destructive: false, openWorld: true }),
+    annotations: annotations({ destructive: true, openWorld: true }),
     meta: { ...appOnlyMeta, 'ui/resourceUri': UI_URI },
     handler: async (runtime, { proposalId, confirmationToken }) =>
-      result(await runtime.approve(proposalId, confirmationToken)),
+      result(publicChangeProposal(await runtime.approve(proposalId, confirmationToken))),
   },
   {
     name: 'cancel_change',
@@ -342,7 +366,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     inputSchema: { proposalId: z.string().uuid() },
     annotations: annotations({ readOnly: true, openWorld: false }),
     meta: { ...appOnlyMeta, 'ui/resourceUri': UI_URI },
-    handler: (runtime, { proposalId }) => result(runtime.cancel(proposalId)),
+    handler: (runtime, { proposalId }) => result(publicChangeProposal(runtime.cancel(proposalId))),
   },
 
   legacyOperation('core', legacyTools.checkAccessTool, legacyTools.handleCheckAccess, {
@@ -406,7 +430,8 @@ export const OPERATIONS: readonly OperationDefinition[] = [
         .optional(),
     },
     annotations: annotations({ destructive: false }),
-    handler: async (runtime, input) => result(await runtime.createSpreadsheet(input)),
+    handler: async (runtime, input) =>
+      operationResult(runtime, await runtime.createSpreadsheet(input)),
   },
 
   legacyOperation('sheets', legacyTools.insertSheetTool, legacyTools.handleInsertSheet, {
@@ -447,7 +472,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
       valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional(),
     },
     annotations: annotations({ destructive: false, openWorld: false }),
-    handler: async (runtime, input) => result(await runtime.insertColumns(input)),
+    handler: async (runtime, input) => operationResult(runtime, await runtime.insertColumns(input)),
   },
   {
     name: 'move_spreadsheet',
@@ -457,7 +482,8 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     readOnly: false,
     inputSchema: { spreadsheetId: z.string().min(1), folderId: z.string().min(1) },
     annotations: annotations({ destructive: true, openWorld: false }),
-    handler: async (runtime, input) => result(await runtime.moveSpreadsheet(input)),
+    handler: async (runtime, input) =>
+      operationResult(runtime, await runtime.moveSpreadsheet(input)),
   },
 
   legacyOperation('formatting', legacyTools.formatCellsTool, legacyTools.formatCellsHandler, {
@@ -550,7 +576,8 @@ export const OPERATIONS: readonly OperationDefinition[] = [
       filteredRowsIncluded: z.boolean().optional(),
     },
     annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: async (runtime, input) => result(await runtime.setDataValidation(input)),
+    handler: async (runtime, input) =>
+      operationResult(runtime, await runtime.setDataValidation(input)),
   },
   {
     name: 'clear_data_validation',
@@ -560,7 +587,8 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     readOnly: false,
     inputSchema: { spreadsheetId: z.string().min(1), range: z.string().min(1) },
     annotations: annotations({ destructive: true, openWorld: false }),
-    handler: async (runtime, input) => result(await runtime.clearDataValidation(input)),
+    handler: async (runtime, input) =>
+      operationResult(runtime, await runtime.clearDataValidation(input)),
   },
   {
     name: 'set_basic_filter',
@@ -576,7 +604,8 @@ export const OPERATIONS: readonly OperationDefinition[] = [
       criteria: z.record(z.any()).optional(),
     },
     annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: async (runtime, input) => result(await runtime.setBasicFilter(input)),
+    handler: async (runtime, input) =>
+      operationResult(runtime, await runtime.setBasicFilter(input)),
   },
   {
     name: 'clear_basic_filter',
@@ -586,7 +615,8 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     readOnly: false,
     inputSchema: { spreadsheetId: z.string().min(1), sheetId: z.number().int() },
     annotations: annotations({ destructive: true, openWorld: false }),
-    handler: async (runtime, input) => result(await runtime.clearBasicFilter(input)),
+    handler: async (runtime, input) =>
+      operationResult(runtime, await runtime.clearBasicFilter(input)),
   },
 
   legacyOperation('charts', legacyTools.createChartTool, legacyTools.handleCreateChart, {
@@ -629,11 +659,10 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     category: 'account',
     readOnly: false,
     annotations: annotations({ destructive: true, idempotent: true, openWorld: false }),
-    handler: () => {
-      throw new Error(
-        'sign_out requires the reviewed account-action flow and is not executable yet'
-      );
-    },
+    inputSchema: { revokeGoogleGrant: z.boolean().optional() },
+    meta: { ...reviewMeta, 'ui/resourceUri': UI_URI },
+    handler: async (runtime, input) =>
+      operationResult(runtime, await runtime.prepareSignOut(input)),
   },
 ];
 

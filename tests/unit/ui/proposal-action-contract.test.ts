@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PROPOSAL_ACTION_TOOLS,
+  proposalPresentation,
   proposalActionSuccessMessage,
+  parseEditableProposalValues,
 } from '../../../ui/src/proposal-action-contract.js';
 
 describe('proposal review action contract', () => {
@@ -15,10 +17,35 @@ describe('proposal review action contract', () => {
   });
 
   it('shows the approval result only for the normalized approval operation', () => {
-    expect(proposalActionSuccessMessage('approve_change', false)).toBe(
-      'Google accepted the write, but verification differed. Refresh before another action.'
+    expect(proposalActionSuccessMessage('approve_change', 'applied_verification_pending')).toBe(
+      'Change applied, but verification is pending. Refresh before dependent destructive work.'
     );
-    expect(proposalActionSuccessMessage('approve_change', true)).toBe('Change applied and verified.');
+    expect(proposalActionSuccessMessage('approve_change', 'verified')).toBe(
+      'Change applied and verified.'
+    );
     expect(proposalActionSuccessMessage('edit_change')).toBe('Proposal updated.');
+  });
+
+  it('presents editable values and exact structural previews differently', () => {
+    expect(
+      proposalPresentation({
+        operation: 'update_values',
+        editable: true,
+        preview: { kind: 'values', before: [['Open']], after: [['Paid']] },
+      })
+    ).toEqual({ title: 'Update values', editable: true, previewKind: 'values' });
+    expect(
+      proposalPresentation({
+        operation: 'delete_rows',
+        editable: false,
+        preview: { kind: 'exact', before: { rows: [4] }, after: { rows: [] } },
+      })
+    ).toEqual({ title: 'Delete rows', editable: false, previewKind: 'exact' });
+  });
+
+  it('parses edited value previews but rejects edits to exact previews', () => {
+    expect(parseEditableProposalValues('{"Status":"Paid"}', 'values')).toEqual({ Status: 'Paid' });
+    expect(() => parseEditableProposalValues('{"rows":[]}', 'exact')).toThrow('not editable');
+    expect(() => parseEditableProposalValues('not json', 'values')).toThrow('valid JSON');
   });
 });

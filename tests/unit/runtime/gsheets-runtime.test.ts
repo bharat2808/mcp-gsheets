@@ -86,8 +86,13 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     const index = new LocalIndex(join(directory, 'index.sqlite'), key);
     index.initialize();
     index.upsertSpreadsheet({
-      id: 'preserved-sheet', name: 'Preserved', path: '/Preserved', modifiedTime: '',
-      version: '1', indexStatus: 'current', lastIndexedAt: null,
+      id: 'preserved-sheet',
+      name: 'Preserved',
+      path: '/Preserved',
+      modifiedTime: '',
+      version: '1',
+      indexStatus: 'current',
+      lastIndexedAt: null,
     });
     index.close();
     await runtime.initialize();
@@ -114,16 +119,24 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     );
     await vault.saveClientSecret('GOCSPX-secret');
     const priorTokens = {
-      accessToken: 'prior-access', refreshToken: 'prior-refresh', expiryDate: 1_900_000_000_000,
-      scope: 'https://www.googleapis.com/auth/spreadsheets', tokenType: 'Bearer',
+      accessToken: 'prior-access',
+      refreshToken: 'prior-refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
     };
     await vault.saveTokens(priorTokens);
     const key = await vault.getOrCreateDataKey();
     const index = new LocalIndex(join(directory, 'index.sqlite'), key);
     index.initialize();
     index.upsertSpreadsheet({
-      id: 'preserved-sheet', name: 'Preserved', path: '/Preserved', modifiedTime: '',
-      version: '1', indexStatus: 'current', lastIndexedAt: null,
+      id: 'preserved-sheet',
+      name: 'Preserved',
+      path: '/Preserved',
+      modifiedTime: '',
+      version: '1',
+      indexStatus: 'current',
+      lastIndexedAt: null,
     });
     index.close();
     await runtime.initialize();
@@ -131,7 +144,8 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
 
     await expect(
       getSetupOptions()?.onConnected({
-        accessToken: 'candidate-access', refreshToken: 'candidate-refresh',
+        accessToken: 'candidate-access',
+        refreshToken: 'candidate-refresh',
         expiryDate: 1_900_000_000_000,
         scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
         tokenType: 'Bearer',
@@ -153,7 +167,9 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     );
     await vault.saveClientSecret('GOCSPX-secret');
     await vault.saveTokens({
-      accessToken: 'access', refreshToken: 'refresh', expiryDate: 1_900_000_000_000,
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
       scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
       tokenType: 'Bearer',
     });
@@ -162,34 +178,70 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     index.initialize();
     index.setSelectedFolderIds(['folder-1']);
     index.close();
-    const fetcher = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ user: { permissionId: 'account-1' } }), { status: 200 })
-    );
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ user: { permissionId: 'account-1' } }), { status: 200 })
+      );
     vi.stubGlobal('fetch', fetcher);
     const refresh = vi.spyOn(runtime, 'refresh').mockResolvedValue({} as any);
     await runtime.initialize();
     fetcher.mockReset();
     fetcher
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 'folder-1', name: 'Folder', mimeType: 'application/vnd.google-apps.folder',
-        parents: ['root-id'], ownedByMe: true,
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 'root-id', name: 'My Drive', mimeType: 'application/vnd.google-apps.folder',
-        parents: [], ownedByMe: true,
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        spreadsheetId: 'created-book', properties: { title: 'Created' },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 'created-book', name: 'Created', mimeType: 'application/vnd.google-apps.spreadsheet',
-        parents: ['root-id'], ownedByMe: true,
-      }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'folder-1',
+            name: 'Folder',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: ['root-id'],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'root-id',
+            name: 'My Drive',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            spreadsheetId: 'created-book',
+            properties: { title: 'Created' },
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'created-book',
+            name: 'Created',
+            mimeType: 'application/vnd.google-apps.spreadsheet',
+            parents: ['root-id'],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        )
+      )
       .mockResolvedValueOnce(new Response('{}', { status: 503 }));
 
     await expect(
       runtime.createSpreadsheet({ title: 'Created', folderId: 'folder-1' })
-    ).resolves.toMatchObject({ spreadsheetId: 'created-book', partialCreation: true });
+    ).resolves.toMatchObject({
+      spreadsheetId: 'created-book',
+      partialCreation: true,
+      verificationState: 'applied_verification_pending',
+    });
     expect(refresh).toHaveBeenCalledTimes(2);
 
     vi.unstubAllGlobals();
@@ -402,7 +454,7 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     await runtime.close();
   });
 
-  it('signs out by removing tokens while preserving encrypted indexed state', async () => {
+  it('executes approved sign-out by removing tokens and account-bound index state', async () => {
     const { runtime, directory, vault } = await createRuntime();
     await runtime.initialize();
     await vault.saveTokens({
@@ -426,11 +478,11 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
       lastIndexedAt: '2026-08-05T00:01:00.000Z',
     });
 
-    await expect(runtime.signOut()).resolves.toEqual({ signedOut: true });
+    await expect(runtime.signOut()).resolves.toEqual({ signedOut: true, grantRevoked: false });
 
     expect(await vault.loadTokens()).toBeNull();
-    expect(index.getSelectedFolderIds()).toEqual(['folder-1']);
-    expect(index.getCatalog().map((entry) => entry.id)).toEqual(['book-1']);
+    expect(index.getSelectedFolderIds()).toEqual([]);
+    expect(index.getCatalog()).toEqual([]);
     index.close();
     await runtime.close();
   });
