@@ -18,21 +18,33 @@ try {
   const { tools } = await client.listTools();
   const names = tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
-    'approve_sheet_proposal',
-    'cancel_sheet_proposal',
-    'edit_sheet_proposal',
+    'append_values',
+    'approve_change',
+    'batch_get_values',
+    'batch_update_values',
+    'cancel_change',
+    'check_access',
+    'clear_values',
+    'create_spreadsheet',
+    'edit_change',
     'explore_spreadsheet',
     'fetch',
+    'get_catalog',
     'get_connection_status',
+    'get_metadata',
     'get_recent_changes',
-    'get_sheets_catalog',
-    'prepare_sheet_change',
-    'refresh_sheets_index',
-    'review_sheet_change',
+    'get_sheet_dimensions',
+    'get_sheet_structure',
+    'get_values',
+    'prepare_row_change',
+    'refresh_index',
+    'review_change',
     'search',
+    'update_values',
   ]);
+  assert.equal(names.some((name) => name.startsWith('sheets_')), false);
   await client.callTool({ name: 'get_connection_status', arguments: {} });
-  console.log('Built MCP artifact initialized and exposed the curated tool surface.');
+  console.log('Built MCP artifact initialized and exposed the normalized default core surface.');
 } finally {
   await client.close();
 }

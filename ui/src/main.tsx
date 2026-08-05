@@ -6,6 +6,7 @@ import {
   useHostStyleVariables,
 } from '@modelcontextprotocol/ext-apps/react';
 
+import { PROPOSAL_ACTION_TOOLS, proposalActionSuccessMessage } from './proposal-action-contract.js';
 import './styles.css';
 
 type CellValue = string | number | boolean | null;
@@ -79,13 +80,7 @@ function ReviewApp() {
       }
       const token = response._meta?.['gsheets/confirmationToken'];
       if (typeof token === 'string') setConfirmationToken(token);
-      setMessage(
-        name === 'approve_sheet_proposal'
-          ? next?.result?.verified === false
-            ? 'Google accepted the write, but verification differed. Refresh before another action.'
-            : 'Change applied and verified.'
-          : 'Proposal updated.'
-      );
+      setMessage(proposalActionSuccessMessage(name, next?.result?.verified));
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -190,7 +185,7 @@ function ReviewApp() {
             <button
               className="secondary"
               disabled={busy}
-              onClick={() => call('cancel_sheet_proposal', { proposalId: proposal.id })}
+              onClick={() => call(PROPOSAL_ACTION_TOOLS.cancel, { proposalId: proposal.id })}
             >
               Cancel
             </button>
@@ -198,7 +193,7 @@ function ReviewApp() {
               className="secondary"
               disabled={busy}
               onClick={() =>
-                call('edit_sheet_proposal', { proposalId: proposal.id, values: draft })
+                call(PROPOSAL_ACTION_TOOLS.edit, { proposalId: proposal.id, values: draft })
               }
             >
               Save edits
@@ -206,7 +201,7 @@ function ReviewApp() {
             <button
               disabled={busy || !confirmed || !confirmationToken}
               onClick={() =>
-                call('approve_sheet_proposal', { proposalId: proposal.id, confirmationToken })
+                call(PROPOSAL_ACTION_TOOLS.approve, { proposalId: proposal.id, confirmationToken })
               }
             >
               Apply to Google Sheets
