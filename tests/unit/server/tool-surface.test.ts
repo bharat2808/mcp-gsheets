@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { APP_ONLY_TOOL_NAMES, OPERATIONS, PUBLIC_TOOL_NAMES } from '../../../src/plugin/tool-registry.js';
+import { APP_ONLY_TOOL_NAMES, PUBLIC_TOOL_NAMES } from '../../../src/plugin/tool-registry.js';
 import { GSheetsRuntime } from '../../../src/runtime/gsheets-runtime.js';
 import { createGSheetsServer } from '../../../src/server/create-server.js';
 
@@ -15,16 +15,37 @@ describe('public MCP tool surface', () => {
     await server.close();
   });
 
-  it('defaults discovery to normalized core tools and marks approval controls app-only', async () => {
+  it('defaults discovery to the literal curated and retained normalized core surface', async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
     const response = await client.listTools();
 
-    const coreNames = OPERATIONS.filter((operation) => operation.category === 'core').map(
-      (operation) => operation.name
-    );
-    expect(response.tools.map((tool) => tool.name).sort()).toEqual(coreNames.sort());
+    expect(response.tools.map((tool) => tool.name).sort()).toEqual([
+      'append_values',
+      'approve_change',
+      'batch_get_values',
+      'batch_update_values',
+      'cancel_change',
+      'check_access',
+      'clear_values',
+      'create_spreadsheet',
+      'edit_change',
+      'explore_spreadsheet',
+      'fetch',
+      'get_catalog',
+      'get_connection_status',
+      'get_metadata',
+      'get_recent_changes',
+      'get_sheet_dimensions',
+      'get_sheet_structure',
+      'get_values',
+      'prepare_row_change',
+      'refresh_index',
+      'review_change',
+      'search',
+      'update_values',
+    ]);
     for (const name of APP_ONLY_TOOL_NAMES) {
       const tool = response.tools.find((candidate) => candidate.name === name);
       expect(tool?._meta?.ui).toMatchObject({ visibility: ['app'] });
