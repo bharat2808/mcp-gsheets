@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { APP_ONLY_TOOL_NAMES, PUBLIC_TOOL_NAMES } from '../../../src/plugin/tool-registry.js';
+import { APP_ONLY_TOOL_NAMES, OPERATIONS, PUBLIC_TOOL_NAMES } from '../../../src/plugin/tool-registry.js';
 import { GSheetsRuntime } from '../../../src/runtime/gsheets-runtime.js';
 import { createGSheetsServer } from '../../../src/server/create-server.js';
 
@@ -15,16 +15,55 @@ describe('public MCP tool surface', () => {
     await server.close();
   });
 
-  it('registers exactly the curated tools and marks approval controls app-only', async () => {
+  it('defaults discovery to normalized core tools and marks approval controls app-only', async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
     const response = await client.listTools();
 
-    expect(response.tools.map((tool) => tool.name).sort()).toEqual([...PUBLIC_TOOL_NAMES].sort());
+    const coreNames = OPERATIONS.filter((operation) => operation.category === 'core').map(
+      (operation) => operation.name
+    );
+    expect(response.tools.map((tool) => tool.name).sort()).toEqual(coreNames.sort());
     for (const name of APP_ONLY_TOOL_NAMES) {
       const tool = response.tools.find((candidate) => candidate.name === name);
       expect(tool?._meta?.ui).toMatchObject({ visibility: ['app'] });
+    }
+  });
+
+  it('discovers every normalized public operation when all categories are enabled', async () => {
+    const server = createGSheetsServer(new GSheetsRuntime(), {
+      GSHEETS_TOOL_CATEGORIES: 'all',
+    });
+    const categoryClient = new Client({ name: 'test', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), categoryClient.connect(clientTransport)]);
+
+    try {
+      const response = await categoryClient.listTools();
+      expect(response.tools.map((tool) => tool.name).sort()).toEqual([...PUBLIC_TOOL_NAMES].sort());
+      expect(response.tools.every((tool) => !tool.name.startsWith('sheets_'))).toBe(true);
+    } finally {
+      await categoryClient.close();
+      await server.close();
+    }
+  });
+
+  it('registers future operations with an explicit unavailable result', async () => {
+    const server = createGSheetsServer(new GSheetsRuntime(), {
+      GSHEETS_TOOL_CATEGORIES: 'account',
+    });
+    const categoryClient = new Client({ name: 'test', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), categoryClient.connect(clientTransport)]);
+
+    try {
+      const response = await categoryClient.callTool({ name: 'sign_out', arguments: {} });
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain('sign_out is registered but not implemented yet');
+    } finally {
+      await categoryClient.close();
+      await server.close();
     }
   });
 });
@@ -137,7 +176,7 @@ describe('app-only confirmation boundary', () => {
 
     try {
       const prepared = await client.callTool({
-        name: 'prepare_sheet_change',
+        name: 'prepare_row_change',
         arguments: { spreadsheetId: 'book', sheetId: 1, operation: 'append', values: { ID: 'A-2' } },
       });
       expect(JSON.stringify(prepared.content)).not.toContain('app-only-secret-token');
@@ -146,7 +185,7 @@ describe('app-only confirmation boundary', () => {
       });
 
       await client.callTool({
-        name: 'approve_sheet_proposal',
+        name: 'approve_change',
         arguments: {
           proposalId: proposal.id,
           confirmationToken: 'app-only-secret-token-that-is-long-enough',
