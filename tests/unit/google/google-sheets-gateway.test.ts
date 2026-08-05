@@ -453,13 +453,11 @@ describe('GoogleSheetsGateway retained-handler context', () => {
               },
             },
             {
-              updateCells: {
-                start: { sheetId: 7, rowIndex: 1, columnIndex: 2 },
-                rows: [
-                  { values: [{ userEnteredValue: { stringValue: 'Q1' } }, { userEnteredValue: { stringValue: 'Q2' } }] },
-                  { values: [{ userEnteredValue: { numberValue: 10 } }, { userEnteredValue: { numberValue: 20 } }] },
-                ],
-                fields: 'userEnteredValue',
+              pasteData: {
+                coordinate: { sheetId: 7, rowIndex: 1, columnIndex: 2 },
+                data: '"Q1","Q2"\r\n"10","20"',
+                type: 'PASTE_NORMAL',
+                delimiter: ',',
               },
             },
           ],
@@ -469,6 +467,93 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     );
     expect(update).not.toHaveBeenCalled();
     expect(result).toMatchObject({ insertedColumns: 2, updatedRange: "'Plan'!C2:D3" });
+  });
+
+  it('preserves USER_ENTERED parsing and robust CSV cells in the atomic batch', async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: { sheets: [{ properties: { sheetId: 7, title: 'Plan' } }] },
+    });
+    const batchUpdate = vi.fn().mockResolvedValue({ data: { replies: [{}, {}] } });
+    const update = vi.fn();
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      fetch,
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { get, batchUpdate, values: { update } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
+    );
+
+    await gateway.insertColumns({
+      spreadsheetId: 'book',
+      range: 'Plan!A1',
+      columns: 7,
+      values: [
+        ['001', true, '08/05/2026', '=SUM(1,2)', 'comma,value', 'quote"value', 'line1\nline2'],
+      ],
+      valueInputOption: 'USER_ENTERED',
+    });
+
+    expect(batchUpdate).toHaveBeenCalledOnce();
+    expect(batchUpdate.mock.calls[0]?.[0].requestBody.requests[1]).toEqual({
+      pasteData: {
+        coordinate: { sheetId: 7, rowIndex: 0, columnIndex: 0 },
+        data:
+          '"001","TRUE","08/05/2026","=SUM(1,2)","comma,value","quote""value","line1\nline2"',
+        type: 'PASTE_NORMAL',
+        delimiter: ',',
+      },
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('keeps RAW values exact inside the same atomic batch', async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: { sheets: [{ properties: { sheetId: 7, title: 'Plan' } }] },
+    });
+    const batchUpdate = vi.fn().mockResolvedValue({ data: { replies: [{}, {}] } });
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      fetch,
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { get, batchUpdate } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
+    );
+
+    await gateway.insertColumns({
+      spreadsheetId: 'book',
+      range: 'Plan!A1',
+      columns: 4,
+      values: [['001', true, '08/05/2026', '=1+1']],
+      valueInputOption: 'RAW',
+    });
+
+    expect(batchUpdate).toHaveBeenCalledOnce();
+    expect(batchUpdate.mock.calls[0]?.[0].requestBody.requests[1]).toEqual({
+      updateCells: {
+        start: { sheetId: 7, rowIndex: 0, columnIndex: 0 },
+        rows: [
+          {
+            values: [
+              { userEnteredValue: { stringValue: '001' } },
+              { userEnteredValue: { boolValue: true } },
+              { userEnteredValue: { stringValue: '08/05/2026' } },
+              { userEnteredValue: { stringValue: '=1+1' } },
+            ],
+          },
+        ],
+        fields: 'userEnteredValue',
+      },
+    });
   });
 
   it('validates insert-column values before mutating the sheet', async () => {

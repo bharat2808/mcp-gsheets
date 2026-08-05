@@ -473,17 +473,27 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       },
     ];
     if (input.values?.length) {
-      requests.push({
-        updateCells: {
-          start: { sheetId, rowIndex: startRow - 1, columnIndex: startIndex },
-          rows: input.values.map((row) => ({
-            values: row.map((value) => ({
-              ...this.#cellData(value, input.valueInputOption ?? 'USER_ENTERED'),
+      const coordinate = { sheetId, rowIndex: startRow - 1, columnIndex: startIndex };
+      if ((input.valueInputOption ?? 'USER_ENTERED') === 'USER_ENTERED') {
+        requests.push({
+          pasteData: {
+            coordinate,
+            data: this.#serializeCsv(input.values),
+            type: 'PASTE_NORMAL',
+            delimiter: ',',
+          },
+        });
+      } else {
+        requests.push({
+          updateCells: {
+            start: coordinate,
+            rows: input.values.map((row) => ({
+              values: row.map((value) => ({ ...this.#cellData(value) })),
             })),
-          })),
-          fields: 'userEnteredValue',
-        },
-      });
+            fields: 'userEnteredValue',
+          },
+        });
+      }
     }
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: input.spreadsheetId,
@@ -604,7 +614,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     return result - 1;
   }
 
-  #cellData(value: unknown, inputOption: 'RAW' | 'USER_ENTERED') {
+  #cellData(value: unknown) {
     if (value === null || value === undefined) {
       return {};
     }
@@ -615,12 +625,32 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       return { userEnteredValue: { numberValue: value } };
     }
     const text = typeof value === 'string' ? value : JSON.stringify(value);
-    return {
-      userEnteredValue:
-        inputOption === 'USER_ENTERED' && text.startsWith('=')
-          ? { formulaValue: text }
-          : { stringValue: text },
-    };
+    return { userEnteredValue: { stringValue: text } };
+  }
+
+  #serializeCsv(values: readonly (readonly unknown[])[]): string {
+    return values
+      .map((row) =>
+        row.map((value) => `"${this.#pasteText(value).replaceAll('"', '""')}"`).join(',')
+      )
+      .join('\r\n');
+  }
+
+  #pasteText(value: unknown): string {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    if (typeof value === 'boolean') {
+      return value ? 'TRUE' : 'FALSE';
+    }
+    if (typeof value === 'string' || typeof value === 'number') {
+      return String(value);
+    }
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) {
+      throw new Error(`Unsupported USER_ENTERED cell value type: ${typeof value}`);
+    }
+    return serialized;
   }
 
   async #moveSpreadsheetToFolder(spreadsheetId: string, folderId: string): Promise<void> {
