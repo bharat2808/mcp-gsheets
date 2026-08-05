@@ -4,6 +4,7 @@ import { CellValue, IndexedTable } from '../domain/types.js';
 import { DriveFileMetadata } from '../drive/catalog.js';
 import { parseSheetValues } from '../indexing/sheet-parser.js';
 import { OperationPreflight } from '../operations/change-workflow.js';
+import { extractOperationResources, spreadsheetResourceIds } from '../operations/resources.js';
 import { SheetChangeRequest } from '../proposals/proposal-manager.js';
 import { SheetsReadGateway } from '../sync/sync-service.js';
 import { extractSheetName, parseRange } from '../utils/range-helpers.js';
@@ -941,26 +942,20 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       typeof arguments_.spreadsheetId === 'string' ? arguments_.spreadsheetId : undefined;
     const ranges = operationRanges(operation, arguments_);
     const valueRanges = spreadsheetId ? await this.readValueRanges(spreadsheetId, ranges) : [];
-    const driveRevisions = spreadsheetId ? await this.getRevisions([spreadsheetId]) : {};
-    const affectedResources: OperationPreflight['affectedResources'] = spreadsheetId
-      ? [
-          { kind: 'spreadsheet', id: spreadsheetId, label: spreadsheetId },
-          ...ranges.map((range) => ({
-            kind: 'range' as const,
-            id: `${spreadsheetId}:${range}`,
-            label: range,
-          })),
-        ]
-      : operation === 'sign_out'
-        ? [{ kind: 'account', id: 'google', label: 'Connected Google account' }]
-        : [];
-    if (typeof arguments_.sheetId === 'number' && spreadsheetId) {
-      affectedResources.push({
-        kind: 'sheet',
-        id: `${spreadsheetId}:${arguments_.sheetId}`,
-        label: `Sheet ${arguments_.sheetId}`,
-      });
-    }
+    const resourceArguments =
+      operation === 'update_values'
+        ? { ...arguments_, range: ranges[0] ?? arguments_.range }
+        : operation === 'batch_update_values' && Array.isArray(arguments_.data)
+          ? {
+              ...arguments_,
+              data: arguments_.data.map((entry, index) => ({
+                ...(entry as Record<string, unknown>),
+                range: ranges[index] ?? (entry as { range?: unknown }).range,
+              })),
+            }
+          : arguments_;
+    const affectedResources = extractOperationResources(operation, resourceArguments);
+    const driveRevisions = await this.getRevisions(spreadsheetResourceIds(affectedResources));
 
     let gridShrinks = false;
     let metadataState: unknown;
@@ -987,21 +982,6 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     }
     if (operation === 'move_spreadsheet' && spreadsheetId) {
       metadataState = await this.#driveFile(spreadsheetId);
-    }
-
-    if (typeof arguments_.chartId === 'number' && spreadsheetId) {
-      affectedResources.push({
-        kind: 'chart',
-        id: `${spreadsheetId}:${arguments_.chartId}`,
-        label: `Chart ${arguments_.chartId}`,
-      });
-    }
-    if (typeof arguments_.tableId === 'string' && spreadsheetId) {
-      affectedResources.push({
-        kind: 'table',
-        id: `${spreadsheetId}:${arguments_.tableId}`,
-        label: `Table ${arguments_.tableId}`,
-      });
     }
 
     const valueOperation = [
@@ -1055,6 +1035,18 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       typeof arguments_.spreadsheetId === 'string' ? arguments_.spreadsheetId : undefined;
     if (!spreadsheetId) {
       return operation === 'create_spreadsheet' || operation === 'sign_out';
+    }
+
+    if (operation === 'copy_to') {
+      const destinationSpreadsheetId =
+        typeof arguments_.destinationSpreadsheetId === 'string'
+          ? arguments_.destinationSpreadsheetId
+          : undefined;
+      if (!destinationSpreadsheetId) {
+        return false;
+      }
+      const afterRevision = await this.getRevision(destinationSpreadsheetId);
+      return afterRevision !== preflight.driveRevisions[destinationSpreadsheetId];
     }
 
     if (operation === 'update_values' || operation === 'batch_update_values') {

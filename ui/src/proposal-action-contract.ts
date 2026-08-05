@@ -4,6 +4,30 @@ export const PROPOSAL_ACTION_TOOLS = {
   approve: 'approve_change',
 } as const;
 
+export interface ProposalSecurityState {
+  confirmed: boolean;
+  confirmationToken: string;
+}
+
+export function proposalSecurityStateAfterResponse(
+  _state: ProposalSecurityState,
+  confirmationToken: unknown
+): ProposalSecurityState {
+  return {
+    confirmed: false,
+    confirmationToken: typeof confirmationToken === 'string' ? confirmationToken : '',
+  };
+}
+
+export function proposalSecurityStateBeforeAction(
+  state: ProposalSecurityState,
+  action: string
+): ProposalSecurityState {
+  return action === PROPOSAL_ACTION_TOOLS.edit
+    ? { confirmed: false, confirmationToken: '' }
+    : state;
+}
+
 export function proposalActionSuccessMessage(
   name: string,
   verificationState?: 'not_started' | 'verified' | 'applied_verification_pending'

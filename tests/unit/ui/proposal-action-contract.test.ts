@@ -5,6 +5,8 @@ import {
   proposalPresentation,
   proposalActionSuccessMessage,
   parseEditableProposalValues,
+  proposalSecurityStateAfterResponse,
+  proposalSecurityStateBeforeAction,
 } from '../../../ui/src/proposal-action-contract.js';
 
 describe('proposal review action contract', () => {
@@ -47,5 +49,26 @@ describe('proposal review action contract', () => {
     expect(parseEditableProposalValues('{"Status":"Paid"}', 'values')).toEqual({ Status: 'Paid' });
     expect(() => parseEditableProposalValues('{"rows":[]}', 'exact')).toThrow('not editable');
     expect(() => parseEditableProposalValues('not json', 'values')).toThrow('valid JSON');
+  });
+
+  it('clears confirmation for every proposal response and clears the old token before edit', () => {
+    expect(
+      proposalSecurityStateAfterResponse(
+        { confirmed: true, confirmationToken: 'old-token' },
+        'fresh-token'
+      )
+    ).toEqual({ confirmed: false, confirmationToken: 'fresh-token' });
+    expect(
+      proposalSecurityStateAfterResponse(
+        { confirmed: true, confirmationToken: 'old-token' },
+        undefined
+      )
+    ).toEqual({ confirmed: false, confirmationToken: '' });
+    expect(
+      proposalSecurityStateBeforeAction(
+        { confirmed: true, confirmationToken: 'old-token' },
+        'edit_change'
+      )
+    ).toEqual({ confirmed: false, confirmationToken: '' });
   });
 });

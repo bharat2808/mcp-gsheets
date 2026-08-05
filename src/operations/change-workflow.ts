@@ -42,6 +42,16 @@ export interface ChangeAuditStore {
   }): void;
   hasPendingVerification(resourceIds: readonly string[]): boolean;
   clearPendingVerifications(resourceIds?: readonly string[]): void;
+  recordWriteOutcome?(outcome: {
+    audit: WriteAudit;
+    pending?: {
+      operation: string;
+      recordedAt: string;
+      affectedResourceIds: string[];
+      error: string;
+    };
+    clearResourceIds?: string[];
+  }): void;
 }
 
 export interface ChangeWorkflowDependencies {
@@ -57,6 +67,7 @@ export interface ExecuteChangeInput {
   execute: (arguments_: Record<string, unknown>) => Promise<unknown>;
   refresh?: boolean;
   preflight?: OperationPreflight;
+  persistOutcome?: boolean;
 }
 
 export type ChangeWorkflowOutcome =
@@ -79,8 +90,15 @@ export class ChangeWorkflow {
   readonly #now: () => number;
   readonly #executors = new Map<
     string,
-    { execute: ExecuteChangeInput['execute']; refresh: boolean; preflight: OperationPreflight }
+    {
+      execute: ExecuteChangeInput['execute'];
+      refresh: boolean;
+      persistOutcome: boolean;
+      preflight: OperationPreflight;
+    }
   >();
+  readonly #locks = new Map<string, Promise<void>>();
+  readonly #pendingFallback = new Set<string>();
   readonly #proposals: ProposalManager;
 
   constructor(dependencies: ChangeWorkflowDependencies) {
@@ -92,7 +110,8 @@ export class ChangeWorkflow {
       {
         getRevisions: (proposal) => this.#gateway.getRevisions(proposal),
         captureState: (proposal) => this.#gateway.captureState(proposal),
-        apply: (proposal) => this.#applyApproved(proposal),
+        apply: (proposal, markApplicationOccurred) =>
+          this.#applyApproved(proposal, markApplicationOccurred),
       },
       this.#now
     );
@@ -104,7 +123,7 @@ export class ChangeWorkflow {
     const ids = resourceIds(preflight.affectedResources);
     if (
       isDestructiveOperation(input.operation) &&
-      this.#auditStore.hasPendingVerification(input.operation === 'sign_out' ? [] : ids)
+      this.#hasPendingVerification(input.operation, ids)
     ) {
       throw new Error(
         'A dependent destructive change is blocked while an earlier application has pending verification'
@@ -129,6 +148,7 @@ export class ChangeWorkflow {
       this.#executors.set(proposal.id, {
         execute: input.execute,
         refresh: input.refresh !== false,
+        persistOutcome: input.persistOutcome !== false,
         preflight,
       });
       return { kind: 'proposal', proposal };
@@ -140,7 +160,10 @@ export class ChangeWorkflow {
       preflight,
       input.execute,
       input.refresh !== false,
-      'direct'
+      'direct',
+      undefined,
+      undefined,
+      input.persistOutcome !== false
     );
     return { kind: 'direct', ...application };
   }
@@ -163,23 +186,27 @@ export class ChangeWorkflow {
   }
 
   async approve(id: string, nonce: string): Promise<ChangeProposal> {
-    const proposal = this.#proposals.review(id);
-    const ids = resourceIds(proposal.affectedResources);
-    if (
-      isDestructiveOperation(proposal.operation) &&
-      this.#auditStore.hasPendingVerification(proposal.operation === 'sign_out' ? [] : ids)
-    ) {
-      throw new Error(
-        'A dependent destructive change is blocked while an earlier application has pending verification'
-      );
-    }
-    this.#proposals.recordVisualConfirmation(id, nonce);
-    const applied = await this.#proposals.approve(id);
-    this.#executors.delete(id);
-    return applied;
+    const initial = this.#proposals.review(id);
+    const ids = resourceIds(initial.affectedResources);
+    return this.#withResourceLocks(ids, async () => {
+      const proposal = this.#proposals.review(id);
+      if (
+        isDestructiveOperation(proposal.operation) &&
+        this.#hasPendingVerification(proposal.operation, ids)
+      ) {
+        throw new Error(
+          'A dependent destructive change is blocked while an earlier application has pending verification'
+        );
+      }
+      this.#proposals.recordVisualConfirmation(id, nonce);
+      return this.#proposals.approve(id);
+    });
   }
 
-  async #applyApproved(proposal: ChangeProposal): Promise<ChangeApplicationResult> {
+  async #applyApproved(
+    proposal: ChangeProposal,
+    markApplicationOccurred: (data: unknown) => void
+  ): Promise<ChangeApplicationResult> {
     const pending = this.#executors.get(proposal.id);
     if (!pending) {
       throw new Error('The proposal execution plan is unavailable');
@@ -191,7 +218,12 @@ export class ChangeWorkflow {
       pending.execute,
       pending.refresh,
       'reviewed',
-      proposal
+      proposal,
+      (data) => {
+        this.#executors.delete(proposal.id);
+        markApplicationOccurred(data);
+      },
+      pending.persistOutcome
     );
     return {
       data: outcome.data,
@@ -207,13 +239,16 @@ export class ChangeWorkflow {
     execute: ExecuteChangeInput['execute'],
     refresh: boolean,
     approval: 'direct' | 'reviewed',
-    proposal?: ChangeProposal
+    proposal?: ChangeProposal,
+    onApplicationOccurred?: (data: unknown) => void,
+    persistOutcome = true
   ): Promise<{
     data: unknown;
     verificationState: ChangeApplicationResult['verificationState'];
     verificationError?: string;
   }> {
     const data = await execute(structuredClone(arguments_));
+    onApplicationOccurred?.(data);
     if (
       preflight.affectedResources.length === 0 &&
       data &&
@@ -246,21 +281,10 @@ export class ChangeWorkflow {
     }
 
     const ids = resourceIds(preflight.affectedResources);
-    const verificationState = errors.length === 0 ? 'verified' : 'applied_verification_pending';
-    const verificationError = errors.join('; ');
-    if (verificationState === 'verified') {
-      this.#auditStore.clearPendingVerifications(ids);
-    } else {
-      this.#auditStore.recordPendingVerification({
-        operation,
-        recordedAt: new Date(this.#now()).toISOString(),
-        affectedResourceIds: ids,
-        error: verificationError,
-      });
-    }
-    this.#auditStore.recordWriteAudit({
+    const appliedAt = new Date(this.#now()).toISOString();
+    const audit: WriteAudit = {
       ...(proposal ? { proposalId: proposal.id } : {}),
-      appliedAt: new Date(this.#now()).toISOString(),
+      appliedAt,
       operation,
       arguments: structuredClone(arguments_),
       affectedResources: structuredClone(preflight.affectedResources),
@@ -268,13 +292,127 @@ export class ChangeWorkflow {
       riskReasons: proposal?.riskReasons ?? [],
       approval,
       result: structuredClone(data),
-      verificationState,
-      ...(verificationError ? { verificationError } : {}),
-    });
+      verificationState: errors.length === 0 ? 'verified' : 'applied_verification_pending',
+      ...(errors.length > 0 ? { verificationError: errors.join('; ') } : {}),
+    };
+    if (persistOutcome) {
+      try {
+        this.#persistOutcome(audit, operation, ids, errors);
+      } catch (error) {
+        errors.push(
+          `Bookkeeping failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        try {
+          this.#auditStore.recordPendingVerification({
+            operation,
+            recordedAt: appliedAt,
+            affectedResourceIds: ids,
+            error: errors.join('; '),
+          });
+        } catch (pendingError) {
+          errors.push(
+            `Pending block persistence failed: ${pendingError instanceof Error ? pendingError.message : String(pendingError)}`
+          );
+        }
+      }
+    }
+    const verificationState = errors.length === 0 ? 'verified' : 'applied_verification_pending';
+    const verificationError = errors.join('; ');
+    if (verificationState === 'verified') {
+      for (const id of ids) {
+        this.#pendingFallback.delete(id);
+      }
+    } else {
+      for (const id of ids) {
+        this.#pendingFallback.add(id);
+      }
+    }
     return {
       data,
       verificationState,
       ...(verificationError ? { verificationError } : {}),
     };
+  }
+
+  clearPendingVerificationBlocks(resourceIds?: readonly string[]): void {
+    if (!resourceIds) {
+      this.#pendingFallback.clear();
+      return;
+    }
+    for (const id of resourceIds) {
+      this.#pendingFallback.delete(id);
+    }
+  }
+
+  #persistOutcome(audit: WriteAudit, operation: string, ids: string[], errors: string[]): void {
+    const pending =
+      errors.length > 0
+        ? {
+            operation,
+            recordedAt: audit.appliedAt,
+            affectedResourceIds: ids,
+            error: errors.join('; '),
+          }
+        : undefined;
+    const finalizedAudit: WriteAudit = {
+      ...audit,
+      verificationState: pending ? 'applied_verification_pending' : 'verified',
+      ...(pending ? { verificationError: pending.error } : {}),
+    };
+    if (this.#auditStore.recordWriteOutcome) {
+      this.#auditStore.recordWriteOutcome({
+        audit: finalizedAudit,
+        ...(pending ? { pending } : { clearResourceIds: ids }),
+      });
+      return;
+    }
+    if (pending) {
+      this.#auditStore.recordPendingVerification(pending);
+    } else {
+      this.#auditStore.clearPendingVerifications(ids);
+    }
+    this.#auditStore.recordWriteAudit(finalizedAudit);
+  }
+
+  #hasPendingVerification(operation: string, ids: readonly string[]): boolean {
+    const fallback =
+      operation === 'sign_out'
+        ? this.#pendingFallback.size > 0
+        : ids.some((id) => this.#pendingFallback.has(id));
+    try {
+      const persisted = this.#auditStore.hasPendingVerification(
+        operation === 'sign_out' ? [] : ids
+      );
+      return fallback || persisted;
+    } catch {
+      return true;
+    }
+  }
+
+  async #withResourceLocks<T>(keys: readonly string[], action: () => Promise<T>): Promise<T> {
+    const releases: Array<() => void> = [];
+    for (const key of [...new Set(keys)].sort()) {
+      const previous = this.#locks.get(key) ?? Promise.resolve();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const queued = previous.then(() => gate);
+      this.#locks.set(key, queued);
+      await previous;
+      releases.push(() => {
+        release();
+        if (this.#locks.get(key) === queued) {
+          this.#locks.delete(key);
+        }
+      });
+    }
+    try {
+      return await action();
+    } finally {
+      for (const release of releases.reverse()) {
+        release();
+      }
+    }
   }
 }

@@ -270,12 +270,18 @@ export class GSheetsRuntime {
     if (this.#refreshPromise) {
       await this.#refreshPromise.catch(() => undefined);
     }
-    if (options.revokeGoogleGrant === true) {
-      await this.#requiredClient().revokeGoogleGrant();
+    try {
+      if (options.revokeGoogleGrant === true) {
+        await this.#requiredClient().revokeGoogleGrant();
+      }
+      await this.#vault.deleteTokens();
+      this.#requiredIndex().clearAccountData();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#lastError = `Sign-out incomplete: ${message}`;
+      throw error;
     }
     this.#disconnect();
-    await this.#vault.deleteTokens();
-    this.#requiredIndex().clearAccountData();
     this.#missingScopes = [];
     this.#lastRefresh = null;
     this.#lastError = 'Signed out. Reconnect from the local setup URL.';
@@ -290,6 +296,7 @@ export class GSheetsRuntime {
         execute: (arguments_) =>
           this.signOut({ revokeGoogleGrant: arguments_.revokeGoogleGrant === true }),
         refresh: false,
+        persistOutcome: false,
       })
     );
   }
@@ -323,6 +330,7 @@ export class GSheetsRuntime {
     try {
       this.#lastRefresh = await this.#refreshPromise;
       this.#requiredIndex().clearPendingVerifications();
+      this.#workflow?.clearPendingVerificationBlocks();
       this.#lastError = null;
       return this.#lastRefresh;
     } catch (error) {

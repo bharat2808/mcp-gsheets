@@ -11,6 +11,8 @@ import {
   PROPOSAL_ACTION_TOOLS,
   proposalActionSuccessMessage,
   proposalPresentation,
+  proposalSecurityStateAfterResponse,
+  proposalSecurityStateBeforeAction,
 } from './proposal-action-contract.js';
 import './styles.css';
 
@@ -60,10 +62,13 @@ function ReviewApp() {
         if (next) {
           setProposal(next);
           setDraft(pretty(next.preview.after));
-          setConfirmed(false);
+          const security = proposalSecurityStateAfterResponse(
+            { confirmed, confirmationToken },
+            params._meta?.['gsheets/confirmationToken']
+          );
+          setConfirmed(security.confirmed);
+          setConfirmationToken(security.confirmationToken);
         }
-        const token = params._meta?.['gsheets/confirmationToken'];
-        if (typeof token === 'string') setConfirmationToken(token);
       };
     },
   });
@@ -76,6 +81,9 @@ function ReviewApp() {
 
   async function call(name: string, arguments_: Record<string, unknown>) {
     if (!app) return;
+    const before = proposalSecurityStateBeforeAction({ confirmed, confirmationToken }, name);
+    setConfirmed(before.confirmed);
+    setConfirmationToken(before.confirmationToken);
     setBusy(true);
     setMessage('');
     try {
@@ -85,9 +93,13 @@ function ReviewApp() {
       if (next) {
         setProposal(next);
         setDraft(pretty(next.preview.after));
+        const security = proposalSecurityStateAfterResponse(
+          { confirmed, confirmationToken },
+          response._meta?.['gsheets/confirmationToken']
+        );
+        setConfirmed(security.confirmed);
+        setConfirmationToken(security.confirmationToken);
       }
-      const token = response._meta?.['gsheets/confirmationToken'];
-      if (typeof token === 'string') setConfirmationToken(token);
       setMessage(proposalActionSuccessMessage(name, next?.verificationState));
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : String(caught));

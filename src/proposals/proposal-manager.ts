@@ -2,7 +2,12 @@ import { randomBytes, randomUUID } from 'node:crypto';
 
 import { CellValue } from '../domain/types.js';
 
-export type ProposalStatus = 'pending' | 'applied' | 'applied_verification_pending' | 'cancelled';
+export type ProposalStatus =
+  | 'pending'
+  | 'applying'
+  | 'applied'
+  | 'applied_verification_pending'
+  | 'cancelled';
 export type VerificationState = 'not_started' | 'verified' | 'applied_verification_pending';
 export type ProposalPreviewKind = 'values' | 'exact';
 export type ResourceKind = 'account' | 'spreadsheet' | 'sheet' | 'range' | 'chart' | 'table';
@@ -53,7 +58,10 @@ export type PublicChangeProposal = Omit<ChangeProposal, 'nonce' | 'preflightStat
 export interface ProposalGateway {
   getRevisions(proposal: ChangeProposal): Promise<Record<string, string>>;
   captureState(proposal: ChangeProposal): Promise<unknown>;
-  apply(proposal: ChangeProposal): Promise<ChangeApplicationResult>;
+  apply(
+    proposal: ChangeProposal,
+    markApplicationOccurred: (data: unknown) => void
+  ): Promise<ChangeApplicationResult>;
 }
 
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
@@ -162,19 +170,53 @@ export class ProposalManager {
     if (!proposal.visuallyConfirmed) {
       throw new Error('The proposal requires visual confirmation in the app before approval');
     }
-    const revisions = await this.#gateway.getRevisions(structuredClone(proposal));
-    if (!equalState(proposal.driveRevisions, revisions)) {
-      throw new Error('A spreadsheet revision changed; refresh and prepare a new proposal');
+    proposal.status = 'applying';
+    proposal.nonce = '';
+    let applicationOccurred = false;
+    const markApplicationOccurred = (data: unknown) => {
+      if (applicationOccurred) {
+        return;
+      }
+      applicationOccurred = true;
+      proposal.status = 'applied_verification_pending';
+      proposal.verificationState = 'applied_verification_pending';
+      proposal.result = {
+        data: structuredClone(data),
+        verificationState: 'applied_verification_pending',
+      };
+    };
+    try {
+      const revisions = await this.#gateway.getRevisions(structuredClone(proposal));
+      if (!equalState(proposal.driveRevisions, revisions)) {
+        throw new Error('A spreadsheet revision changed; refresh and prepare a new proposal');
+      }
+      const state = await this.#gateway.captureState(structuredClone(proposal));
+      if (!equalState(proposal.preflightState, state)) {
+        throw new Error('The target state changed; refresh and prepare a new proposal');
+      }
+      const result = await this.#gateway.apply(structuredClone(proposal), markApplicationOccurred);
+      if (!applicationOccurred) {
+        markApplicationOccurred(result.data);
+      }
+      proposal.result = result;
+    } catch (error) {
+      if (!applicationOccurred) {
+        proposal.status = 'pending';
+        proposal.verificationState = 'not_started';
+        proposal.visuallyConfirmed = false;
+        proposal.nonce = randomBytes(32).toString('base64url');
+        delete proposal.result;
+        throw error;
+      }
+      proposal.result = {
+        data: proposal.result?.data,
+        verificationState: 'applied_verification_pending',
+        verificationError: error instanceof Error ? error.message : String(error),
+      };
     }
-    const state = await this.#gateway.captureState(structuredClone(proposal));
-    if (!equalState(proposal.preflightState, state)) {
-      throw new Error('The target state changed; refresh and prepare a new proposal');
-    }
-    proposal.result = await this.#gateway.apply(structuredClone(proposal));
     proposal.verificationState = proposal.result.verificationState;
     proposal.status =
       proposal.verificationState === 'verified' ? 'applied' : 'applied_verification_pending';
-    proposal.nonce = '';
     return structuredClone(proposal);
   }
 

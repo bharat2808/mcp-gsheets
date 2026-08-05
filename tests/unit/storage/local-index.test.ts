@@ -276,4 +276,59 @@ describe('LocalIndex', () => {
     index.close();
     expect(readFileSync(databasePath).includes(Buffer.from('refresh failed'))).toBe(false);
   });
+
+  it('rolls back encrypted audit and pending inserts when encryption fails', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'gsheets-index-bad-key-'));
+    tempDirectories.push(directory);
+    const databasePath = join(directory, 'index.sqlite');
+    const index = new LocalIndex(databasePath, Buffer.alloc(31, 1));
+    index.initialize();
+
+    expect(() =>
+      index.recordWriteAudit({
+        appliedAt: '2026-08-05T00:00:00.000Z',
+        operation: 'update_values',
+      })
+    ).toThrow();
+    expect(() =>
+      index.recordPendingVerification({
+        operation: 'update_values',
+        recordedAt: '2026-08-05T00:00:00.000Z',
+        affectedResourceIds: ['spreadsheet:book'],
+        error: 'verification failed',
+      })
+    ).toThrow();
+
+    const raw = new DatabaseSync(databasePath);
+    expect(raw.prepare('SELECT encrypted_payload FROM write_audits').all()).toEqual([]);
+    expect(raw.prepare('SELECT encrypted_payload FROM pending_verifications').all()).toEqual([]);
+    raw.close();
+    index.close();
+  });
+
+  it('decrypts every persisted audit and pending row without placeholder residue', () => {
+    const { index, databasePath } = createIndex();
+    for (let number = 1; number <= 3; number += 1) {
+      index.recordWriteAudit({
+        appliedAt: `2026-08-05T00:00:0${number}.000Z`,
+        operation: `operation-${number}`,
+      });
+      index.recordPendingVerification({
+        operation: `operation-${number}`,
+        recordedAt: `2026-08-05T00:00:0${number}.000Z`,
+        affectedResourceIds: [`spreadsheet:book-${number}`],
+        error: `error-${number}`,
+      });
+    }
+    expect(index.getWriteAudits()).toHaveLength(3);
+    expect(index.getPendingVerifications()).toHaveLength(3);
+    index.close();
+    const raw = new DatabaseSync(databasePath);
+    const payloads = [
+      ...raw.prepare('SELECT encrypted_payload FROM write_audits').all(),
+      ...raw.prepare('SELECT encrypted_payload FROM pending_verifications').all(),
+    ] as Array<{ encrypted_payload: string }>;
+    expect(payloads.every((row) => row.encrypted_payload !== 'pending')).toBe(true);
+    raw.close();
+  });
 });

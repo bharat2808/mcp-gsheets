@@ -139,4 +139,148 @@ describe('ChangeWorkflow', () => {
     );
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it('executes one concurrent approval at most once', async () => {
+    const dependencies = fixture();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const execute = vi.fn(async () => {
+      await barrier;
+      return { updatedRange: 'Plan!A2' };
+    });
+    const workflow = new ChangeWorkflow(dependencies);
+    const prepared = await workflow.execute({ ...input, execute });
+    if (prepared.kind !== 'proposal') throw new Error('expected proposal');
+    const nonce = workflow.confirmationToken(prepared.proposal.id);
+
+    const first = workflow.approve(prepared.proposal.id, nonce);
+    while (execute.mock.calls.length === 0) await Promise.resolve();
+    const second = workflow.approve(prepared.proposal.id, nonce);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    release();
+    const results = await Promise.allSettled([first, second]);
+    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes distinct overlapping proposals by affected resource', async () => {
+    const dependencies = fixture();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let active = 0;
+    let maximumActive = 0;
+    const firstExecute = vi.fn(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await barrier;
+      active -= 1;
+      return { updatedRange: 'Plan!A2' };
+    });
+    const secondExecute = vi.fn(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      active -= 1;
+      return { updatedRange: 'Plan!A2' };
+    });
+    const workflow = new ChangeWorkflow(dependencies);
+    const first = await workflow.execute({ ...input, execute: firstExecute });
+    const second = await workflow.execute({ ...input, execute: secondExecute });
+    if (first.kind !== 'proposal' || second.kind !== 'proposal')
+      throw new Error('expected proposals');
+
+    const firstApproval = workflow.approve(
+      first.proposal.id,
+      workflow.confirmationToken(first.proposal.id)
+    );
+    while (firstExecute.mock.calls.length === 0) await Promise.resolve();
+    const secondApproval = workflow.approve(
+      second.proposal.id,
+      workflow.confirmationToken(second.proposal.id)
+    );
+    await Promise.resolve();
+    expect(secondExecute).not.toHaveBeenCalled();
+    release();
+    await Promise.all([firstApproval, secondApproval]);
+    expect(maximumActive).toBe(1);
+  });
+
+  it('rotates confirmation and permits retry after a pre-apply failure', async () => {
+    const dependencies = fixture();
+    dependencies.gateway.getRevisions
+      .mockRejectedValueOnce(new Error('revision read unavailable'))
+      .mockResolvedValue({ book: '7' });
+    const execute = vi.fn().mockResolvedValue({ updatedRange: 'Plan!A2' });
+    const workflow = new ChangeWorkflow(dependencies);
+    const prepared = await workflow.execute({ ...input, execute });
+    if (prepared.kind !== 'proposal') throw new Error('expected proposal');
+    const firstNonce = workflow.confirmationToken(prepared.proposal.id);
+
+    await expect(workflow.approve(prepared.proposal.id, firstNonce)).rejects.toThrow(
+      'revision read'
+    );
+    expect(execute).not.toHaveBeenCalled();
+    const retryNonce = workflow.confirmationToken(prepared.proposal.id);
+    expect(retryNonce).not.toBe(firstNonce);
+    await expect(workflow.approve(prepared.proposal.id, firstNonce)).rejects.toThrow(
+      'confirmation token'
+    );
+    await expect(workflow.approve(prepared.proposal.id, retryNonce)).resolves.toMatchObject({
+      status: 'applied',
+    });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-execute when bookkeeping fails after application', async () => {
+    const dependencies = fixture({ empty: true });
+    dependencies.auditStore.clearPendingVerifications.mockImplementation(() => {
+      throw new Error('database unavailable');
+    });
+    dependencies.auditStore.recordPendingVerification.mockImplementation(() => {
+      throw new Error('database unavailable');
+    });
+    dependencies.auditStore.recordWriteAudit.mockImplementation(() => {
+      throw new Error('database unavailable');
+    });
+    const execute = vi.fn().mockResolvedValue({ updatedRange: 'Plan!A2' });
+    const workflow = new ChangeWorkflow(dependencies);
+    const outcome = await workflow.execute({ ...input, execute });
+
+    expect(outcome).toMatchObject({
+      kind: 'direct',
+      verificationState: 'applied_verification_pending',
+    });
+    await expect(
+      workflow.execute({
+        operation: 'delete_rows',
+        arguments: input.arguments,
+        execute: vi.fn(),
+      })
+    ).rejects.toThrow('pending verification');
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates an approved executor immediately after execute succeeds', async () => {
+    const dependencies = fixture();
+    dependencies.auditStore.recordWriteAudit.mockImplementation(() => {
+      throw new Error('database unavailable');
+    });
+    const execute = vi.fn().mockResolvedValue({ updatedRange: 'Plan!A2' });
+    const workflow = new ChangeWorkflow(dependencies);
+    const prepared = await workflow.execute({ ...input, execute });
+    if (prepared.kind !== 'proposal') throw new Error('expected proposal');
+    const nonce = workflow.confirmationToken(prepared.proposal.id);
+
+    await expect(workflow.approve(prepared.proposal.id, nonce)).resolves.toMatchObject({
+      status: 'applied_verification_pending',
+    });
+    await expect(workflow.approve(prepared.proposal.id, nonce)).rejects.toThrow(/applied/u);
+    expect(execute).toHaveBeenCalledOnce();
+  });
 });

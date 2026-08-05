@@ -57,6 +57,50 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     expect(preflight.preview).toMatchObject({ kind: 'values', before: [] });
   });
 
+  it('preflights both copy spreadsheets and verifies the mutated destination revision', async () => {
+    const versions = new Map([
+      ['source-book', '4'],
+      ['destination-book', '8'],
+    ]);
+    const fetcher = vi.fn(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      const spreadsheetId = url.includes('source-book') ? 'source-book' : 'destination-book';
+      return new Response(JSON.stringify({ version: versions.get(spreadsheetId) }), {
+        status: 200,
+      });
+    });
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      fetcher,
+      Date.now,
+      { authorizeSpreadsheet: async () => {} }
+    );
+
+    const arguments_ = {
+      spreadsheetId: 'source-book',
+      sheetId: 7,
+      destinationSpreadsheetId: 'destination-book',
+    };
+    const preflight = await gateway.inspectOperation('copy_to', arguments_, []);
+
+    expect(preflight.affectedResources).toEqual([
+      { kind: 'spreadsheet', id: 'source-book', label: 'source-book' },
+      { kind: 'spreadsheet', id: 'destination-book', label: 'destination-book' },
+      { kind: 'sheet', id: 'source-book:7', label: 'Sheet 7' },
+    ]);
+    expect(preflight.driveRevisions).toEqual({
+      'source-book': '4',
+      'destination-book': '8',
+    });
+
+    versions.set('destination-book', '9');
+    await expect(gateway.verifyOperation('copy_to', arguments_, preflight)).resolves.toBe(true);
+    expect(fetcher.mock.calls.at(-1)?.[0]).toContain('destination-book');
+  });
+
   it('constructs retained clients with the Desktop OAuth credential', () => {
     const sheetsClient = { spreadsheets: {} };
     const sheets = vi.spyOn(google, 'sheets').mockReturnValue(sheetsClient as any);

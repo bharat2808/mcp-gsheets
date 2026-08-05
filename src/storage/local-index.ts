@@ -299,13 +299,15 @@ export class LocalIndex {
     if (change.changes.length === 0) {
       return;
     }
-    const result = this.#db()
-      .prepare('INSERT INTO recent_changes (detected_at, encrypted_payload) VALUES (?, ?)')
-      .run(change.detectedAt, 'pending');
-    const id = Number(result.lastInsertRowid);
-    this.#db()
-      .prepare('UPDATE recent_changes SET encrypted_payload = ? WHERE id = ?')
-      .run(encryptJson(this.#key, change, `change:${id}`), id);
+    this.#transaction(() => {
+      this.#insertEncryptedRow(
+        'recent_changes',
+        'detected_at',
+        change.detectedAt,
+        change,
+        'change'
+      );
+    });
   }
 
   getRecentChanges(limit = 100): RecentChange[] {
@@ -320,13 +322,9 @@ export class LocalIndex {
   }
 
   recordWriteAudit(audit: WriteAudit): void {
-    const result = this.#db()
-      .prepare('INSERT INTO write_audits (applied_at, encrypted_payload) VALUES (?, ?)')
-      .run(audit.appliedAt, 'pending');
-    const id = Number(result.lastInsertRowid);
-    this.#db()
-      .prepare('UPDATE write_audits SET encrypted_payload = ? WHERE id = ?')
-      .run(encryptJson(this.#key, audit, `write-audit:${id}`), id);
+    this.#transaction(() => {
+      this.#insertEncryptedRow('write_audits', 'applied_at', audit.appliedAt, audit, 'write-audit');
+    });
   }
 
   getWriteAudits(limit = 100): WriteAudit[] {
@@ -341,13 +339,43 @@ export class LocalIndex {
   }
 
   recordPendingVerification(pending: PendingVerification): void {
-    const result = this.#db()
-      .prepare('INSERT INTO pending_verifications (recorded_at, encrypted_payload) VALUES (?, ?)')
-      .run(pending.recordedAt, 'pending');
-    const id = Number(result.lastInsertRowid);
-    this.#db()
-      .prepare('UPDATE pending_verifications SET encrypted_payload = ? WHERE id = ?')
-      .run(encryptJson(this.#key, pending, `pending-verification:${id}`), id);
+    this.#transaction(() => {
+      this.#insertEncryptedRow(
+        'pending_verifications',
+        'recorded_at',
+        pending.recordedAt,
+        pending,
+        'pending-verification'
+      );
+    });
+  }
+
+  recordWriteOutcome(outcome: {
+    audit: WriteAudit;
+    pending?: PendingVerification;
+    clearResourceIds?: string[];
+  }): void {
+    this.#transaction(() => {
+      if (outcome.clearResourceIds) {
+        this.#clearPendingVerifications(outcome.clearResourceIds);
+      }
+      if (outcome.pending) {
+        this.#insertEncryptedRow(
+          'pending_verifications',
+          'recorded_at',
+          outcome.pending.recordedAt,
+          outcome.pending,
+          'pending-verification'
+        );
+      }
+      this.#insertEncryptedRow(
+        'write_audits',
+        'applied_at',
+        outcome.audit.appliedAt,
+        outcome.audit,
+        'write-audit'
+      );
+    });
   }
 
   getPendingVerifications(): PendingVerification[] {
@@ -379,6 +407,10 @@ export class LocalIndex {
       this.#db().prepare('DELETE FROM pending_verifications').run();
       return;
     }
+    this.#clearPendingVerifications(resourceIds);
+  }
+
+  #clearPendingVerifications(resourceIds: readonly string[]): void {
     const resources = new Set(resourceIds);
     const rows = this.#db()
       .prepare('SELECT id, encrypted_payload FROM pending_verifications')
@@ -393,6 +425,35 @@ export class LocalIndex {
       if (pending.affectedResourceIds.some((id) => resources.has(id))) {
         remove.run(row.id);
       }
+    }
+  }
+
+  #insertEncryptedRow(
+    table: 'recent_changes' | 'write_audits' | 'pending_verifications',
+    timeColumn: 'detected_at' | 'applied_at' | 'recorded_at',
+    time: string,
+    payload: unknown,
+    aadPrefix: 'change' | 'write-audit' | 'pending-verification'
+  ): number {
+    const result = this.#db()
+      .prepare(`INSERT INTO ${table} (${timeColumn}, encrypted_payload) VALUES (?, ?)`)
+      .run(time, 'pending');
+    const id = Number(result.lastInsertRowid);
+    const encrypted = encryptJson(this.#key, payload, `${aadPrefix}:${id}`);
+    this.#db().prepare(`UPDATE ${table} SET encrypted_payload = ? WHERE id = ?`).run(encrypted, id);
+    return id;
+  }
+
+  #transaction<T>(action: () => T): T {
+    const database = this.#db();
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      const result = action();
+      database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
     }
   }
 
