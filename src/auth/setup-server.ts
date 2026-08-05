@@ -6,11 +6,12 @@ import {
   buildGoogleAuthorizationUrl,
   createPkcePair,
   exchangeAuthorizationCode,
+  missingGoogleOAuthScopes,
   parseOAuthCallback,
 } from './google-oauth.js';
 import { DRIVE_FOLDER_MIME_TYPE } from '../drive/catalog.js';
 import { validateGoogleOAuthClientId } from '../config/google-oauth-client.js';
-import { GoogleApiClient } from '../google/google-api-client.js';
+import { GoogleSheetsGateway } from '../google/google-api-client.js';
 
 export interface GoogleOAuthClientCredentials {
   clientId: string;
@@ -22,7 +23,7 @@ export interface SetupServerOptions {
   getClientCredentials(): Promise<GoogleOAuthClientCredentials | null>;
   saveClientCredentials(credentials: GoogleOAuthClientCredentials): Promise<void>;
   getSelectedFolderIds(): string[];
-  setSelectedFolderIds(ids: string[]): void;
+  setSelectedFolderIds(ids: string[]): void | Promise<void>;
   onConnected(tokens: OAuthTokenSet): Promise<void>;
 }
 
@@ -168,11 +169,12 @@ export class OAuthSetupServer implements OAuthSetupServerHandle {
     let body: string;
     if (!credentials) {
       body = `<h1>Configure Google OAuth</h1><p>Enter the credentials for a Google Desktop OAuth client. The client secret is stored in your operating system credential store.</p><form method="post" action="/credentials"><input type="hidden" name="token" value="${this.#formToken}"><label class="folder">Client ID <input required name="clientId" autocomplete="username"></label><label class="folder">Client secret <input required type="password" name="clientSecret" autocomplete="current-password"></label><button type="submit">Save credentials</button></form>`;
-    } else if (!tokens) {
-      body =
-        '<h1>Connect Google Sheets</h1><p>Sign in with Google, then choose the My Drive folders this plugin may index.</p><p><a href="/oauth/start">Continue with Google</a></p>';
+    } else if (!tokens || missingGoogleOAuthScopes(tokens.scope).length > 0) {
+      body = tokens
+        ? '<h1>Reconnect Google</h1><p>Google needs renewed consent for Drive file operations. Your encrypted local catalog is preserved.</p><p><a href="/oauth/start">Continue with Google</a></p>'
+        : '<h1>Connect Google Sheets</h1><p>Sign in with Google, then choose the My Drive folders this plugin may index.</p><p><a href="/oauth/start">Continue with Google</a></p>';
     } else {
-      const client = new GoogleApiClient(
+      const client = new GoogleSheetsGateway(
         tokens,
         credentials.clientId,
         credentials.clientSecret,
@@ -218,7 +220,7 @@ export class OAuthSetupServer implements OAuthSetupServerHandle {
       throw new Error('Invalid setup form token');
     }
     const ids = form.getAll('folder');
-    this.options.setSelectedFolderIds(ids);
+    await this.options.setSelectedFolderIds(ids);
     const tokens = await this.options.vault.loadTokens();
     if (tokens) {
       await this.options.onConnected(tokens);

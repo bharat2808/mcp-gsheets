@@ -210,6 +210,24 @@ export class LocalIndex {
       : [];
   }
 
+  setAccountIdentity(identity: string): void {
+    this.#db()
+      .prepare(
+        `INSERT INTO settings (key, encrypted_value) VALUES ('account-identity', ?)
+         ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`
+      )
+      .run(encryptJson(this.#key, identity, 'setting:account-identity'));
+  }
+
+  getAccountIdentity(): string | null {
+    const row = this.#db()
+      .prepare("SELECT encrypted_value FROM settings WHERE key = 'account-identity'")
+      .get() as { encrypted_value: string } | undefined;
+    return row
+      ? decryptJson<string>(this.#key, row.encrypted_value, 'setting:account-identity')
+      : null;
+  }
+
   clearAccountData(): void {
     const database = this.#db();
     database.exec('BEGIN IMMEDIATE');

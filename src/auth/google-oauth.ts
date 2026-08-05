@@ -4,8 +4,14 @@ import { OAuthTokenSet } from './credential-vault.js';
 
 export const GOOGLE_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/drive.metadata.readonly',
+  'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/spreadsheets',
 ] as const;
+
+export function missingGoogleOAuthScopes(scope: string): string[] {
+  const granted = new Set(scope.split(/\s+/u).filter(Boolean));
+  return GOOGLE_OAUTH_SCOPES.filter((required) => !granted.has(required));
+}
 
 export interface PkcePair {
   verifier: string;

@@ -65,6 +65,128 @@ afterEach(async () => {
 });
 
 describe('GSheetsRuntime OAuth credential bootstrap', () => {
+  it('requires re-consent for drive.file without deleting the encrypted catalog', async () => {
+    const { runtime, directory, vault } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope:
+        'https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    const key = await vault.getOrCreateDataKey();
+    const index = new LocalIndex(join(directory, 'index.sqlite'), key);
+    index.initialize();
+    index.setSelectedFolderIds(['selected-folder']);
+    index.upsertSpreadsheet({
+      id: 'existing-sheet',
+      name: 'Existing',
+      path: '/Selected/Existing',
+      modifiedTime: '2026-08-05T00:00:00.000Z',
+      version: '7',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:01:00.000Z',
+    });
+    index.close();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ files: [] }), { status: 200 }))
+    );
+
+    await runtime.initialize();
+
+    expect(runtime.status()).toMatchObject({
+      connected: false,
+      reConsentRequired: true,
+      missingScopes: ['https://www.googleapis.com/auth/drive.file'],
+      selectedFolderCount: 1,
+    });
+    expect(runtime.catalog().spreadsheets.map((entry) => entry.id)).toEqual(['existing-sheet']);
+    expect(await vault.loadTokens()).not.toBeNull();
+    vi.unstubAllGlobals();
+    await runtime.close();
+  });
+
+  it('clears account-specific index state only after detecting a different account', async () => {
+    const { runtime, directory, vault } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: [
+        'https://www.googleapis.com/auth/drive.metadata.readonly',
+        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/spreadsheets',
+      ].join(' '),
+      tokenType: 'Bearer',
+    });
+    const key = await vault.getOrCreateDataKey();
+    const index = new LocalIndex(join(directory, 'index.sqlite'), key);
+    index.initialize();
+    index.setAccountIdentity('old-account');
+    index.setSelectedFolderIds(['selected-folder']);
+    index.upsertSpreadsheet({
+      id: 'existing-sheet',
+      name: 'Existing',
+      path: '/Selected/Existing',
+      modifiedTime: '2026-08-05T00:00:00.000Z',
+      version: '7',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:01:00.000Z',
+    });
+    index.close();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            user: { permissionId: 'new-account' },
+            files: [
+              {
+                id: 'selected-folder',
+                name: 'Selected',
+                mimeType: 'application/vnd.google-apps.folder',
+                parents: [],
+              },
+              {
+                id: 'existing-sheet',
+                name: 'Existing',
+                mimeType: 'application/vnd.google-apps.spreadsheet',
+                parents: ['selected-folder'],
+                version: '7',
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    await runtime.initialize();
+
+    expect(runtime.status()).toMatchObject({ connected: true, selectedFolderCount: 0 });
+    expect(runtime.catalog().spreadsheets).toEqual([]);
+    const reopened = new LocalIndex(join(directory, 'index.sqlite'), key);
+    reopened.initialize();
+    expect(reopened.getAccountIdentity()).toBe('new-account');
+    reopened.close();
+    vi.unstubAllGlobals();
+    await runtime.close();
+  });
+
   it('starts localhost setup even when both OAuth credentials are missing', async () => {
     const { runtime, getSetupOptions } = await createRuntime();
 
@@ -106,7 +228,7 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     await runtime.close();
   });
 
-  it('clears tokens and indexed account data when local credentials are replaced', async () => {
+  it('preserves indexed account data when OAuth client credentials are replaced', async () => {
     const { runtime, directory, vault, getSetupOptions } = await createRuntime();
     await writeFile(
       join(directory, 'config.json'),
@@ -143,9 +265,42 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
 
     expect(await vault.loadTokens()).toBeNull();
     expect(await vault.loadClientSecret()).toBe('GOCSPX-new');
-    expect(index.getSelectedFolderIds()).toEqual([]);
-    expect(index.getCatalog()).toEqual([]);
+    expect(index.getSelectedFolderIds()).toEqual(['old-account-folder']);
+    expect(index.getCatalog().map((entry) => entry.id)).toEqual(['old-sheet']);
     expect(await vault.getOrCreateDataKey()).toEqual(key);
+    index.close();
+    await runtime.close();
+  });
+
+  it('signs out by removing tokens while preserving encrypted indexed state', async () => {
+    const { runtime, directory, vault } = await createRuntime();
+    await runtime.initialize();
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'all',
+      tokenType: 'Bearer',
+    });
+    const key = await vault.getOrCreateDataKey();
+    const index = new LocalIndex(join(directory, 'index.sqlite'), key);
+    index.initialize();
+    index.setSelectedFolderIds(['folder-1']);
+    index.upsertSpreadsheet({
+      id: 'book-1',
+      name: 'Preserved',
+      path: '/Folder/Preserved',
+      modifiedTime: '2026-08-05T00:00:00.000Z',
+      version: '1',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:01:00.000Z',
+    });
+
+    await expect(runtime.signOut()).resolves.toEqual({ signedOut: true });
+
+    expect(await vault.loadTokens()).toBeNull();
+    expect(index.getSelectedFolderIds()).toEqual(['folder-1']);
+    expect(index.getCatalog().map((entry) => entry.id)).toEqual(['book-1']);
     index.close();
     await runtime.close();
   });

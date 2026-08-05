@@ -96,6 +96,44 @@ describe('OAuthSetupServer', () => {
     expect(location.searchParams.get('redirect_uri')).toBe(`${setupUrl}/oauth/callback`);
   });
 
+  it('offers re-consent when stored tokens are missing drive.file', async () => {
+    const vault = new CredentialVault(new MemoryBackend());
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope:
+        'https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    const realFetch = fetch;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).startsWith('http://127.0.0.1')
+        ? realFetch(input, init)
+        : new Response(JSON.stringify({ files: [] }), { status: 200 })
+    );
+    server = new OAuthSetupServer({
+      vault,
+      getClientCredentials: async () => ({
+        clientId: 'desktop-client.apps.googleusercontent.com',
+        clientSecret: 'GOCSPX-secret',
+      }),
+      saveClientCredentials: vi.fn(),
+      getSelectedFolderIds: () => ['existing-folder'],
+      setSelectedFolderIds: vi.fn(),
+      onConnected: vi.fn(),
+    });
+    const setupUrl = await server.start();
+
+    const home = await fetch(setupUrl);
+    const html = await home.text();
+
+    expect(html).toContain('Reconnect Google');
+    expect(html).toContain('Continue with Google');
+    expect(await vault.loadTokens()).not.toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   it('rejects folder-selection posts without the local form token', async () => {
     const setSelectedFolderIds = vi.fn();
     server = new OAuthSetupServer({

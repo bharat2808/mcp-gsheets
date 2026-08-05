@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import { CredentialVault, OAuthTokenSet } from '../auth/credential-vault.js';
+import { missingGoogleOAuthScopes } from '../auth/google-oauth.js';
 import { KeyringBackend } from '../auth/keyring-backend.js';
 import {
   OAuthSetupServer,
@@ -19,7 +20,11 @@ import {
 } from '../config/runtime.js';
 import { CellValue } from '../domain/types.js';
 import { buildCatalogTree } from '../drive/catalog.js';
-import { GoogleApiClient } from '../google/google-api-client.js';
+import {
+  CreateSpreadsheetGatewayInput,
+  GoogleSheetsGateway,
+  InsertColumnsGatewayInput,
+} from '../google/google-api-client.js';
 import { findDuplicateRow } from '../indexing/rows.js';
 import {
   ProposalManager,
@@ -28,6 +33,7 @@ import {
 } from '../proposals/proposal-manager.js';
 import { LocalIndex } from '../storage/local-index.js';
 import { RefreshResult, SyncService } from '../sync/sync-service.js';
+import { runWithGoogleSheetsGateway } from '../utils/google-auth.js';
 
 export interface PrepareChangeInput {
   spreadsheetId: string;
@@ -52,7 +58,7 @@ export class GSheetsRuntime {
   readonly #publisherClientId: string;
   readonly #setupServerFactory: (options: SetupServerOptions) => OAuthSetupServerHandle;
   #index: LocalIndex | null = null;
-  #client: GoogleApiClient | null = null;
+  #client: GoogleSheetsGateway | null = null;
   #sync: SyncService | null = null;
   #proposals: ProposalManager | null = null;
   #setup: OAuthSetupServerHandle | null = null;
@@ -64,6 +70,7 @@ export class GSheetsRuntime {
   #lastRefresh: RefreshResult | null = null;
   #lastError: string | null = null;
   #refreshPromise: Promise<RefreshResult> | null = null;
+  #missingScopes: string[] = [];
 
   constructor(options: GSheetsRuntimeOptions = {}) {
     this.#vault = options.vault ?? new CredentialVault(new KeyringBackend());
@@ -89,7 +96,12 @@ export class GSheetsRuntime {
     await this.#startSetup();
     const tokens = await this.#vault.loadTokens();
     if (this.#clientId && this.#clientSecret && tokens) {
-      await this.#connect(tokens);
+      this.#missingScopes = missingGoogleOAuthScopes(tokens.scope);
+      if (this.#missingScopes.length === 0) {
+        await this.#connect(tokens);
+      } else {
+        this.#lastError = 'Google access must be re-consented to enable Drive file operations.';
+      }
     } else if (!this.#clientId || !this.#clientSecret) {
       this.#lastError = 'Open the local setup URL to configure Google OAuth credentials.';
     }
@@ -101,6 +113,8 @@ export class GSheetsRuntime {
       setupUrl: this.#setupUrl,
       clientIdSource: this.#clientIdSource,
       credentialsConfigured: Boolean(this.#clientId && this.#clientSecret),
+      reConsentRequired: this.#missingScopes.length > 0,
+      missingScopes: [...this.#missingScopes],
       selectedFolderCount: this.#index?.getSelectedFolderIds().length ?? 0,
       lastRefresh: this.#lastRefresh,
       refreshing: Boolean(this.#refreshPromise),
@@ -149,6 +163,101 @@ export class GSheetsRuntime {
       throw new Error(`Indexed row ${id} was not found`);
     }
     return hit;
+  }
+
+  async executeLegacyOperation<T>(
+    handler: (input: any) => T | Promise<T>,
+    input: any,
+    policy: { idempotent: boolean; refreshIndex: boolean }
+  ): Promise<T> {
+    const response = await runWithGoogleSheetsGateway(
+      this.#requiredClient(),
+      { idempotent: policy.idempotent },
+      async () => handler(input)
+    );
+    if (policy.refreshIndex && !this.#isErrorToolResponse(response)) {
+      await this.#refreshAfterMutation();
+    }
+    return response;
+  }
+
+  async createSpreadsheet(input: CreateSpreadsheetGatewayInput) {
+    const result = await this.#requiredClient().createSpreadsheet(
+      input,
+      this.#requiredIndex().getSelectedFolderIds()
+    );
+    await this.#refreshAfterMutation();
+    return result;
+  }
+
+  async insertColumns(input: InsertColumnsGatewayInput) {
+    const result = await this.#requiredClient().insertColumns(input);
+    await this.#refreshAfterMutation();
+    return result;
+  }
+
+  async moveSpreadsheet(input: { spreadsheetId: string; folderId: string }) {
+    const result = await this.#requiredClient().moveSpreadsheet(
+      input.spreadsheetId,
+      input.folderId,
+      this.#requiredIndex().getSelectedFolderIds()
+    );
+    await this.#refreshAfterMutation();
+    return result;
+  }
+
+  async setDataValidation(input: Parameters<GoogleSheetsGateway['setDataValidation']>[0]) {
+    const result = await this.#requiredClient().setDataValidation(input);
+    await this.#refreshAfterMutation();
+    return result;
+  }
+
+  async clearDataValidation(input: Parameters<GoogleSheetsGateway['clearDataValidation']>[0]) {
+    const result = await this.#requiredClient().clearDataValidation(input);
+    await this.#refreshAfterMutation();
+    return result;
+  }
+
+  async setBasicFilter(input: Parameters<GoogleSheetsGateway['setBasicFilter']>[0]) {
+    const result = await this.#requiredClient().setBasicFilter(input);
+    await this.#refreshAfterMutation();
+    return result;
+  }
+
+  async clearBasicFilter(input: Parameters<GoogleSheetsGateway['clearBasicFilter']>[0]) {
+    const result = await this.#requiredClient().clearBasicFilter(input);
+    await this.#refreshAfterMutation();
+    return result;
+  }
+
+  async signOut(): Promise<{ signedOut: true }> {
+    if (this.#refreshPromise) {
+      await this.#refreshPromise.catch(() => undefined);
+    }
+    this.#disconnect();
+    await this.#vault.deleteTokens();
+    this.#missingScopes = [];
+    this.#lastRefresh = null;
+    this.#lastError = 'Signed out. Reconnect from the local setup URL.';
+    return { signedOut: true };
+  }
+
+  #isErrorToolResponse(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || !('content' in value)) {
+      return false;
+    }
+    const content = (value as { content?: Array<{ text?: unknown }> }).content ?? [];
+    return content.some(
+      (entry) => typeof entry.text === 'string' && entry.text.startsWith('Error:')
+    );
+  }
+
+  async #refreshAfterMutation(): Promise<void> {
+    try {
+      await this.refresh();
+    } catch (error) {
+      this.#lastError = `Google change applied, but index refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   async refresh(): Promise<RefreshResult> {
@@ -298,9 +407,22 @@ export class GSheetsRuntime {
     if (!this.#clientId || !this.#clientSecret) {
       throw new Error('Google OAuth client credentials are not configured');
     }
-    this.#client = new GoogleApiClient(tokens, this.#clientId, this.#clientSecret, (next) =>
+    this.#missingScopes = missingGoogleOAuthScopes(tokens.scope);
+    if (this.#missingScopes.length > 0) {
+      this.#disconnect();
+      this.#lastError = 'Google access must be re-consented to enable Drive file operations.';
+      return;
+    }
+    const client = new GoogleSheetsGateway(tokens, this.#clientId, this.#clientSecret, (next) =>
       this.#vault.saveTokens(next)
     );
+    const accountIdentity = await client.getAccountIdentity();
+    const previousIdentity = this.#requiredIndex().getAccountIdentity();
+    if (previousIdentity && previousIdentity !== accountIdentity) {
+      this.#requiredIndex().clearAccountData();
+    }
+    this.#requiredIndex().setAccountIdentity(accountIdentity);
+    this.#client = client;
     this.#sync = new SyncService(this.#requiredIndex(), this.#client, this.#client);
     this.#proposals = new ProposalManager(this.#client);
     try {
@@ -329,7 +451,7 @@ export class GSheetsRuntime {
           : null,
       saveClientCredentials: (credentials) => this.#saveClientCredentials(credentials),
       getSelectedFolderIds: () => this.#requiredIndex().getSelectedFolderIds(),
-      setSelectedFolderIds: (ids) => this.#requiredIndex().setSelectedFolderIds(ids),
+      setSelectedFolderIds: (ids) => this.#setSelectedFolderIds(ids),
       onConnected: (tokens) => this.#connect(tokens),
     });
     try {
@@ -390,7 +512,6 @@ export class GSheetsRuntime {
       }
       this.#disconnect();
       await this.#vault.deleteTokens();
-      this.#requiredIndex().clearAccountData();
       this.#lastRefresh = null;
     }
 
@@ -401,6 +522,15 @@ export class GSheetsRuntime {
         ? previousSource
         : 'local_config';
     this.#lastError = null;
+  }
+
+  async #setSelectedFolderIds(ids: string[]): Promise<void> {
+    const uniqueIds = [...new Set(ids)];
+    const client = this.#requiredClient();
+    for (const folderId of uniqueIds) {
+      await client.validateSelectedMyDriveFolder(folderId, uniqueIds);
+    }
+    this.#requiredIndex().setSelectedFolderIds(uniqueIds);
   }
 
   #disconnect(): void {
@@ -424,7 +554,7 @@ export class GSheetsRuntime {
     return this.#index;
   }
 
-  #requiredClient(): GoogleApiClient {
+  #requiredClient(): GoogleSheetsGateway {
     if (!this.#client) {
       throw new Error('Connect Google first');
     }

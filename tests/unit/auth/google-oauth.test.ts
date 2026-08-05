@@ -1,14 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  GOOGLE_OAUTH_SCOPES,
   buildGoogleAuthorizationUrl,
   createPkcePair,
   exchangeAuthorizationCode,
   parseOAuthCallback,
+  missingGoogleOAuthScopes,
   toStoredTokenSet,
 } from '../../../src/auth/google-oauth.js';
 
 describe('Google desktop OAuth', () => {
+  it('requires drive.file and reports it as a re-consent gap for legacy tokens', () => {
+    expect(GOOGLE_OAUTH_SCOPES).toContain('https://www.googleapis.com/auth/drive.file');
+    expect(
+      missingGoogleOAuthScopes(
+        'https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/spreadsheets'
+      )
+    ).toEqual(['https://www.googleapis.com/auth/drive.file']);
+  });
+
   it('creates an S256 PKCE pair', () => {
     const pair = createPkcePair();
     expect(pair.verifier.length).toBeGreaterThanOrEqual(43);

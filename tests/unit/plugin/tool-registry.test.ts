@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   APP_ONLY_TOOL_NAMES,
@@ -52,5 +52,76 @@ describe('gsheets operation registry', () => {
         'sign_out',
       ])
     );
+  });
+
+  it('routes appends through the gateway without retry permission', async () => {
+    const executeLegacyOperation = vi.fn().mockResolvedValue({ content: [] });
+    const operation = OPERATIONS.find((candidate) => candidate.name === 'append_values');
+
+    await operation?.handler({ executeLegacyOperation } as any, {
+      spreadsheetId: 'book',
+      range: 'Sheet1!A:A',
+      values: [['new row']],
+    });
+
+    expect(executeLegacyOperation).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ spreadsheetId: 'book' }),
+      { idempotent: false, refreshIndex: true }
+    );
+  });
+
+  it('does not classify create-like or structural insert operations as idempotent', () => {
+    const neverReplay = [
+      'create_spreadsheet',
+      'insert_sheet',
+      'duplicate_sheet',
+      'copy_to',
+      'insert_rows',
+      'insert_columns',
+      'merge_cells',
+      'add_conditional_formatting',
+      'create_chart',
+      'add_table',
+    ];
+
+    for (const name of neverReplay) {
+      expect(OPERATIONS.find((operation) => operation.name === name)?.annotations.idempotentHint).toBeUndefined();
+    }
+  });
+
+  it('routes every formerly unavailable operation to its runtime execution primitive', async () => {
+    const runtime = {
+      insertColumns: vi.fn().mockResolvedValue({ ok: 'insert_columns' }),
+      moveSpreadsheet: vi.fn().mockResolvedValue({ ok: 'move_spreadsheet' }),
+      setDataValidation: vi.fn().mockResolvedValue({ ok: 'set_data_validation' }),
+      clearDataValidation: vi.fn().mockResolvedValue({ ok: 'clear_data_validation' }),
+      setBasicFilter: vi.fn().mockResolvedValue({ ok: 'set_basic_filter' }),
+      clearBasicFilter: vi.fn().mockResolvedValue({ ok: 'clear_basic_filter' }),
+      signOut: vi.fn().mockResolvedValue({ signedOut: true }),
+    };
+    const inputs: Record<string, Record<string, unknown>> = {
+      insert_columns: { spreadsheetId: 'book', range: 'Plan!B2' },
+      move_spreadsheet: { spreadsheetId: 'book', folderId: 'folder' },
+      set_data_validation: { spreadsheetId: 'book', range: 'Plan!A2:A9', rule: {} },
+      clear_data_validation: { spreadsheetId: 'book', range: 'Plan!A2:A9' },
+      set_basic_filter: { spreadsheetId: 'book', range: 'Plan!A1:D9' },
+      clear_basic_filter: { spreadsheetId: 'book', sheetId: 7 },
+      sign_out: {},
+    };
+
+    for (const [name, input] of Object.entries(inputs)) {
+      const operation = OPERATIONS.find((candidate) => candidate.name === name);
+      const response = await operation?.handler(runtime as any, input);
+      expect(JSON.stringify(response)).not.toContain('registered but not implemented');
+    }
+
+    expect(runtime.insertColumns).toHaveBeenCalled();
+    expect(runtime.moveSpreadsheet).toHaveBeenCalled();
+    expect(runtime.setDataValidation).toHaveBeenCalled();
+    expect(runtime.clearDataValidation).toHaveBeenCalled();
+    expect(runtime.setBasicFilter).toHaveBeenCalled();
+    expect(runtime.clearBasicFilter).toHaveBeenCalled();
+    expect(runtime.signOut).toHaveBeenCalled();
   });
 });

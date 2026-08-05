@@ -1,11 +1,33 @@
 import { OAuthTokenSet } from '../auth/credential-vault.js';
+import { google } from 'googleapis';
 import { CellValue, IndexedTable } from '../domain/types.js';
 import { DriveFileMetadata } from '../drive/catalog.js';
 import { parseSheetValues } from '../indexing/sheet-parser.js';
 import { ProposalGateway, SheetChangeProposal } from '../proposals/proposal-manager.js';
 import { SheetsReadGateway } from '../sync/sync-service.js';
+import { extractSheetName, parseRange } from '../utils/range-helpers.js';
 
 type TokenSaver = (tokens: OAuthTokenSet) => Promise<void>;
+
+export interface GoogleSheetsGatewayPolicy {
+  idempotent: boolean;
+}
+
+interface GoogleSheetsGatewayOptions {
+  sheetsClient?: unknown;
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
+export class GoogleSheetsGatewayError extends Error {
+  constructor(
+    message: string,
+    readonly code?: number,
+    readonly details?: unknown
+  ) {
+    super(message);
+    this.name = 'GoogleSheetsGatewayError';
+  }
+}
 
 interface DriveListResponse {
   files?: DriveFileMetadata[];
@@ -42,6 +64,22 @@ interface ValuesResponse {
   responses?: Array<{ updatedRange?: string }>;
 }
 
+export interface CreateSpreadsheetGatewayInput {
+  title: string;
+  folderId?: string;
+  sheets?: Array<{ title?: string; rowCount?: number; columnCount?: number }>;
+}
+
+export interface InsertColumnsGatewayInput {
+  spreadsheetId: string;
+  range: string;
+  columns?: number;
+  position?: 'BEFORE' | 'AFTER';
+  inheritFromBefore?: boolean;
+  values?: unknown[][];
+  valueInputOption?: 'RAW' | 'USER_ENTERED';
+}
+
 function quoteSheetTitle(title: string): string {
   return `'${title.replaceAll("'", "''")}'`;
 }
@@ -76,8 +114,10 @@ function formatTable(table: NativeTable, sheetTitle: string): IndexedTable {
   };
 }
 
-export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
+export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
   #tokens: OAuthTokenSet;
+  readonly #oauthClient: InstanceType<typeof google.auth.OAuth2>;
+  readonly #sheetsClient: unknown;
 
   constructor(
     tokens: OAuthTokenSet,
@@ -85,9 +125,101 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
     private readonly clientSecret: string,
     private readonly saveTokens: TokenSaver,
     private readonly fetcher: typeof fetch = fetch,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    private readonly options: GoogleSheetsGatewayOptions = {}
   ) {
     this.#tokens = tokens;
+    this.#oauthClient = new google.auth.OAuth2(clientId, clientSecret);
+    this.#oauthClient.setCredentials({
+      access_token: tokens.accessToken,
+      refresh_token: tokens.refreshToken,
+      expiry_date: tokens.expiryDate,
+      scope: tokens.scope,
+      token_type: tokens.tokenType,
+    });
+    this.#sheetsClient =
+      options.sheetsClient ?? google.sheets({ version: 'v4', auth: this.#oauthClient });
+  }
+
+  getSheetsClient(_policy: GoogleSheetsGatewayPolicy): any {
+    return this.#wrapApi(this.#sheetsClient, _policy);
+  }
+
+  #wrapApi(value: unknown, policy: GoogleSheetsGatewayPolicy): any {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return value;
+    }
+    return new Proxy(value, {
+      get: (target, property) => {
+        const member = Reflect.get(target, property);
+        if (typeof member === 'function') {
+          return (...args: unknown[]) => {
+            const requestArgs = [...args];
+            const options = requestArgs[1];
+            requestArgs[1] =
+              options && typeof options === 'object'
+                ? { ...(options as Record<string, unknown>), retry: false }
+                : { retry: false };
+            return this.#request(
+              () => Promise.resolve(Reflect.apply(member, target, requestArgs)),
+              policy.idempotent
+            );
+          };
+        }
+        return this.#wrapApi(member, policy);
+      },
+    });
+  }
+
+  async #request<T>(operation: () => Promise<T>, idempotent: boolean): Promise<T> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.#refreshIfNeeded();
+        return await operation();
+      } catch (error) {
+        const status = this.#status(error);
+        if (
+          !idempotent ||
+          !status ||
+          ![429, 500, 502, 503, 504].includes(status) ||
+          attempt === 2
+        ) {
+          throw this.#normalize(error, status);
+        }
+        await (
+          this.options.sleep ??
+          ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
+        )(250 * 2 ** attempt);
+      }
+    }
+    throw new Error('Google API retry loop exhausted');
+  }
+
+  #status(error: unknown): number | undefined {
+    if (!error || typeof error !== 'object') {
+      return undefined;
+    }
+    const candidate = error as { code?: unknown; response?: { status?: unknown } };
+    const status = candidate.response?.status ?? candidate.code;
+    return typeof status === 'number' ? status : undefined;
+  }
+
+  #normalize(error: unknown, code = this.#status(error)): GoogleSheetsGatewayError {
+    if (error instanceof GoogleSheetsGatewayError) {
+      return error;
+    }
+    const candidate = error as {
+      message?: unknown;
+      response?: { data?: { error?: { message?: unknown } } };
+    };
+    const providerMessage = candidate.response?.data?.error?.message;
+    const message =
+      typeof providerMessage === 'string'
+        ? providerMessage
+        : typeof candidate.message === 'string'
+          ? candidate.message
+          : 'Google API request failed';
+    return new GoogleSheetsGatewayError(message, code, candidate.response?.data);
   }
 
   async listFileGraph(): Promise<DriveFileMetadata[]> {
@@ -119,6 +251,311 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
       pageToken = page.nextPageToken;
     } while (pageToken);
     return files;
+  }
+
+  async getAccountIdentity(): Promise<string> {
+    const response = await this.#json<{ user?: { permissionId?: string } }>(
+      'https://www.googleapis.com/drive/v3/about?fields=user%28permissionId%29'
+    );
+    const identity = response.user?.permissionId;
+    if (!identity) {
+      throw new Error('Google Drive did not return the authenticated account identity');
+    }
+    return identity;
+  }
+
+  async validateSelectedMyDriveFolder(
+    folderId: string,
+    selectedFolderIds: readonly string[]
+  ): Promise<DriveFileMetadata> {
+    if (!selectedFolderIds.includes(folderId)) {
+      throw new Error(`Folder ${folderId} is not one of the selected My Drive folders`);
+    }
+    const folder = await this.#json<DriveFileMetadata & { trashed?: boolean }>(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folderId)}?fields=id%2Cname%2CmimeType%2Cparents%2CdriveId%2Ctrashed`
+    );
+    if (folder.driveId) {
+      throw new Error('Shared Drive folders are not supported');
+    }
+    if (folder.mimeType !== 'application/vnd.google-apps.folder' || folder.trashed) {
+      throw new Error(`Folder ${folderId} is not an accessible My Drive folder`);
+    }
+    return { ...folder, parents: folder.parents ?? [] };
+  }
+
+  async createSpreadsheet(
+    input: CreateSpreadsheetGatewayInput,
+    selectedFolderIds: readonly string[]
+  ): Promise<{
+    spreadsheetId: string;
+    spreadsheetUrl?: string;
+    title: string;
+    folderId?: string;
+  }> {
+    if (input.folderId) {
+      await this.validateSelectedMyDriveFolder(input.folderId, selectedFolderIds);
+    }
+    const requestBody: Record<string, unknown> = { properties: { title: input.title } };
+    if (input.sheets?.length) {
+      requestBody.sheets = input.sheets.map((sheet, index) => ({
+        properties: {
+          title: sheet.title || `Sheet${index + 1}`,
+          gridProperties: {
+            rowCount: sheet.rowCount ?? 1000,
+            columnCount: sheet.columnCount ?? 26,
+          },
+        },
+      }));
+    }
+    const created = await this.#json<{
+      spreadsheetId?: string;
+      spreadsheetUrl?: string;
+      properties?: { title?: string };
+    }>('https://sheets.googleapis.com/v4/spreadsheets', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+    if (!created.spreadsheetId) {
+      throw new Error('Google Sheets did not return the created spreadsheet ID');
+    }
+    if (input.folderId) {
+      await this.#moveSpreadsheetToFolder(created.spreadsheetId, input.folderId);
+    }
+    return {
+      spreadsheetId: created.spreadsheetId,
+      ...(created.spreadsheetUrl ? { spreadsheetUrl: created.spreadsheetUrl } : {}),
+      title: created.properties?.title ?? input.title,
+      ...(input.folderId ? { folderId: input.folderId } : {}),
+    };
+  }
+
+  async moveSpreadsheet(
+    spreadsheetId: string,
+    folderId: string,
+    selectedFolderIds: readonly string[]
+  ): Promise<{ spreadsheetId: string; folderId: string; verified: true }> {
+    await this.validateSelectedMyDriveFolder(folderId, selectedFolderIds);
+    await this.#moveSpreadsheetToFolder(spreadsheetId, folderId);
+    return { spreadsheetId, folderId, verified: true };
+  }
+
+  async insertColumns(input: InsertColumnsGatewayInput): Promise<{
+    spreadsheetId: string;
+    insertedColumns: number;
+    updatedRange?: string;
+  }> {
+    const columns = input.columns ?? 1;
+    if (!Number.isInteger(columns) || columns < 1) {
+      throw new Error('columns must be a positive integer');
+    }
+    const valueWidth = input.values?.length
+      ? Math.max(...input.values.map((row) => row.length))
+      : 0;
+    if (valueWidth > columns) {
+      throw new Error('values contain more columns than were inserted');
+    }
+    if (input.values?.length && valueWidth === 0) {
+      throw new Error('values rows must not all be empty');
+    }
+    const parts = input.range.split('!');
+    const sheetName = parts.length > 1 ? parts[0]?.replace(/^['"]|['"]$/gu, '') : undefined;
+    const anchor = parts.length > 1 ? parts[1] : parts[0];
+    const match = /^([A-Z]+)(\d+)$/iu.exec(anchor ?? '');
+    if (!match?.[1] || !match[2]) {
+      throw new Error('Column insertion range must be an anchor cell such as Sheet1!B2');
+    }
+    const sheets = this.getSheetsClient({ idempotent: false });
+    const metadata = await sheets.spreadsheets.get({
+      spreadsheetId: input.spreadsheetId,
+      fields: 'sheets.properties',
+    });
+    const entries = metadata.data.sheets ?? [];
+    const sheet = sheetName
+      ? entries.find((entry: any) => entry.properties?.title === sheetName)
+      : entries[0];
+    const sheetId = sheet?.properties?.sheetId;
+    const resolvedTitle = sheet?.properties?.title;
+    if (sheetId === undefined || !resolvedTitle) {
+      throw new Error(
+        sheetName ? `Sheet "${sheetName}" not found` : 'No sheets found in spreadsheet'
+      );
+    }
+    const anchorColumn = this.#columnIndex(match[1].toUpperCase());
+    const startIndex = (input.position ?? 'BEFORE') === 'AFTER' ? anchorColumn + 1 : anchorColumn;
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            insertDimension: {
+              range: {
+                sheetId,
+                dimension: 'COLUMNS',
+                startIndex,
+                endIndex: startIndex + columns,
+              },
+              inheritFromBefore: input.inheritFromBefore ?? false,
+            },
+          },
+        ],
+      },
+    });
+    let updatedRange: string | undefined;
+    if (input.values?.length) {
+      const startRow = Number(match[2]);
+      updatedRange = `${quoteSheetTitle(resolvedTitle)}!${columnName(startIndex)}${startRow}:${columnName(startIndex + valueWidth - 1)}${startRow + input.values.length - 1}`;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: input.spreadsheetId,
+        range: updatedRange,
+        valueInputOption: input.valueInputOption ?? 'USER_ENTERED',
+        requestBody: { values: input.values },
+      });
+    }
+    return {
+      spreadsheetId: input.spreadsheetId,
+      insertedColumns: columns,
+      ...(updatedRange ? { updatedRange } : {}),
+    };
+  }
+
+  async setDataValidation(input: {
+    spreadsheetId: string;
+    range: string;
+    rule: Record<string, unknown>;
+    filteredRowsIncluded?: boolean;
+  }): Promise<{ spreadsheetId: string; range: string }> {
+    const sheets = this.getSheetsClient({ idempotent: true });
+    const range = await this.#resolveGridRange(sheets, input.spreadsheetId, input.range);
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            setDataValidation: {
+              range,
+              rule: input.rule,
+              ...(input.filteredRowsIncluded !== undefined
+                ? { filteredRowsIncluded: input.filteredRowsIncluded }
+                : {}),
+            },
+          },
+        ],
+      },
+    });
+    return { spreadsheetId: input.spreadsheetId, range: input.range };
+  }
+
+  async clearDataValidation(input: {
+    spreadsheetId: string;
+    range: string;
+  }): Promise<{ spreadsheetId: string; range: string }> {
+    const sheets = this.getSheetsClient({ idempotent: false });
+    const range = await this.#resolveGridRange(sheets, input.spreadsheetId, input.range);
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: { requests: [{ setDataValidation: { range } }] },
+    });
+    return { spreadsheetId: input.spreadsheetId, range: input.range };
+  }
+
+  async setBasicFilter(input: {
+    spreadsheetId: string;
+    range: string;
+    sortSpecs?: unknown[];
+    filterSpecs?: unknown[];
+    criteria?: Record<string, unknown>;
+  }): Promise<{ spreadsheetId: string; range: string }> {
+    const sheets = this.getSheetsClient({ idempotent: true });
+    const range = await this.#resolveGridRange(sheets, input.spreadsheetId, input.range);
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            setBasicFilter: {
+              filter: {
+                range,
+                ...(input.sortSpecs ? { sortSpecs: input.sortSpecs } : {}),
+                ...(input.filterSpecs ? { filterSpecs: input.filterSpecs } : {}),
+                ...(input.criteria ? { criteria: input.criteria } : {}),
+              },
+            },
+          },
+        ],
+      },
+    });
+    return { spreadsheetId: input.spreadsheetId, range: input.range };
+  }
+
+  async clearBasicFilter(input: {
+    spreadsheetId: string;
+    sheetId: number;
+  }): Promise<{ spreadsheetId: string; sheetId: number }> {
+    const sheets = this.getSheetsClient({ idempotent: false });
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: { requests: [{ clearBasicFilter: { sheetId: input.sheetId } }] },
+    });
+    return input;
+  }
+
+  async #resolveGridRange(sheets: any, spreadsheetId: string, a1Range: string) {
+    const { sheetName } = extractSheetName(a1Range);
+    const metadata = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: 'sheets.properties',
+    });
+    const entries = metadata.data.sheets ?? [];
+    const sheet = sheetName
+      ? entries.find((entry: any) => entry.properties?.title === sheetName)
+      : entries[0];
+    const sheetId = sheet?.properties?.sheetId;
+    if (sheetId === undefined) {
+      throw new Error(
+        sheetName ? `Sheet "${sheetName}" not found` : 'No sheets found in spreadsheet'
+      );
+    }
+    return parseRange(a1Range, sheetId);
+  }
+
+  #columnIndex(value: string): number {
+    let result = 0;
+    for (const character of value) {
+      result = result * 26 + character.charCodeAt(0) - 64;
+    }
+    return result - 1;
+  }
+
+  async #moveSpreadsheetToFolder(spreadsheetId: string, folderId: string): Promise<void> {
+    const file = await this.#driveFile(spreadsheetId);
+    if (file.driveId) {
+      throw new Error('Shared Drive spreadsheets are not supported');
+    }
+    if (file.mimeType !== 'application/vnd.google-apps.spreadsheet') {
+      throw new Error(`File ${spreadsheetId} is not a Google Sheets spreadsheet`);
+    }
+    const url = new URL(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}`
+    );
+    url.searchParams.set('addParents', folderId);
+    const parentsToRemove = file.parents.filter((parent) => parent !== folderId);
+    if (parentsToRemove.length) {
+      url.searchParams.set('removeParents', parentsToRemove.join(','));
+    }
+    url.searchParams.set('fields', 'id,parents,driveId');
+    await this.#json(url, { method: 'PATCH' }, true);
+    const verified = await this.#driveFile(spreadsheetId);
+    if (verified.driveId || !verified.parents.includes(folderId)) {
+      throw new Error(`Google Drive did not verify placement in folder ${folderId}`);
+    }
+  }
+
+  async #driveFile(fileId: string): Promise<DriveFileMetadata & { trashed?: boolean }> {
+    const file = await this.#json<DriveFileMetadata & { trashed?: boolean }>(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id%2Cname%2CmimeType%2Cparents%2CdriveId%2Ctrashed`
+    );
+    return { ...file, parents: file.parents ?? [] };
   }
 
   async readSpreadsheet(spreadsheetId: string): Promise<{
@@ -258,16 +695,35 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
     return sheet;
   }
 
-  async #json<T>(input: string | URL, init: RequestInit = {}): Promise<T> {
-    await this.#refreshIfNeeded();
-    const response = await this.fetcher(input, {
-      ...init,
-      headers: { ...init.headers, authorization: `Bearer ${this.#tokens.accessToken}` },
-    });
-    if (!response.ok) {
-      throw new Error(`Google API request failed with HTTP ${response.status}`);
-    }
-    return (await response.json()) as T;
+  async #json<T>(
+    input: string | URL,
+    init: RequestInit = {},
+    idempotent = !init.method || init.method === 'GET'
+  ): Promise<T> {
+    return this.#request(async () => {
+      const response = await this.fetcher(input, {
+        ...init,
+        headers: { ...init.headers, authorization: `Bearer ${this.#tokens.accessToken}` },
+      });
+      if (!response.ok) {
+        let details: unknown;
+        try {
+          details = await response.json();
+        } catch {
+          details = undefined;
+        }
+        const providerMessage = (details as { error?: { message?: unknown } } | undefined)?.error
+          ?.message;
+        throw new GoogleSheetsGatewayError(
+          typeof providerMessage === 'string'
+            ? providerMessage
+            : `Google API request failed with HTTP ${response.status}`,
+          response.status,
+          details
+        );
+      }
+      return (await response.json()) as T;
+    }, idempotent);
   }
 
   async #refreshIfNeeded(): Promise<void> {
@@ -303,6 +759,13 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
       scope: body.scope ?? this.#tokens.scope,
       tokenType: body.token_type ?? this.#tokens.tokenType,
     };
+    this.#oauthClient.setCredentials({
+      access_token: this.#tokens.accessToken,
+      refresh_token: this.#tokens.refreshToken,
+      expiry_date: this.#tokens.expiryDate,
+      scope: this.#tokens.scope,
+      token_type: this.#tokens.tokenType,
+    });
     await this.saveTokens(this.#tokens);
   }
 
@@ -315,3 +778,5 @@ export class GoogleApiClient implements SheetsReadGateway, ProposalGateway {
     return row;
   }
 }
+
+export { GoogleSheetsGateway as GoogleApiClient };

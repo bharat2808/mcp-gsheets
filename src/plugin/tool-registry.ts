@@ -50,12 +50,6 @@ function result(data: unknown, metadata?: Record<string, unknown>) {
   };
 }
 
-function unavailable(name: string): OperationHandler {
-  return () => {
-    throw new Error(`${name} is registered but not implemented yet`);
-  };
-}
-
 function normalizedName(name: string): string {
   return name.startsWith('sheets_') ? name.slice('sheets_'.length) : name;
 }
@@ -156,7 +150,11 @@ function legacyOperation(
       destructive: options.destructive,
       idempotent: options.idempotent,
     }),
-    handler: (_runtime, input) => handler(input),
+    handler: (runtime, input) =>
+      runtime.executeLegacyOperation(handler, input, {
+        idempotent: options.idempotent === true,
+        refreshIndex: options.readOnly !== true,
+      }),
   };
 }
 
@@ -388,23 +386,38 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     destructive: false,
   }),
   legacyOperation('core', legacyTools.clearValuesTool, legacyTools.handleClearValues),
-  legacyOperation('core', legacyTools.createSpreadsheetTool, legacyTools.handleCreateSpreadsheet, {
-    destructive: false,
-    idempotent: true,
-  }),
+  {
+    name: 'create_spreadsheet',
+    title: legacyTools.createSpreadsheetTool.name,
+    description: legacyTools.createSpreadsheetTool.description ?? 'Create a spreadsheet.',
+    category: 'core',
+    readOnly: false,
+    inputSchema: {
+      title: z.string().min(1),
+      folderId: z.string().min(1).optional(),
+      sheets: z
+        .array(
+          z.object({
+            title: z.string().min(1).optional(),
+            rowCount: z.number().int().positive().optional(),
+            columnCount: z.number().int().positive().optional(),
+          })
+        )
+        .optional(),
+    },
+    annotations: annotations({ destructive: false }),
+    handler: async (runtime, input) => result(await runtime.createSpreadsheet(input)),
+  },
 
   legacyOperation('sheets', legacyTools.insertSheetTool, legacyTools.handleInsertSheet, {
     destructive: false,
-    idempotent: true,
   }),
   legacyOperation('sheets', legacyTools.deleteSheetTool, legacyTools.handleDeleteSheet),
   legacyOperation('sheets', legacyTools.duplicateSheetTool, legacyTools.handleDuplicateSheet, {
     destructive: false,
-    idempotent: true,
   }),
   legacyOperation('sheets', legacyTools.copyToTool, legacyTools.handleCopyTo, {
     destructive: false,
-    idempotent: true,
   }),
   legacyOperation(
     'sheets',
@@ -415,7 +428,6 @@ export const OPERATIONS: readonly OperationDefinition[] = [
   legacyOperation('sheets', legacyTools.batchDeleteSheetsTool, legacyTools.handleBatchDeleteSheets),
   legacyOperation('sheets', legacyTools.insertRowsTool, legacyTools.handleInsertRows, {
     destructive: false,
-    idempotent: true,
   }),
   legacyOperation('sheets', legacyTools.deleteRowsTool, legacyTools.handleDeleteRows),
   legacyOperation('sheets', legacyTools.deleteColumnsTool, legacyTools.handleDeleteColumns),
@@ -425,8 +437,17 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     description: 'Insert columns at a specific position.',
     category: 'sheets',
     readOnly: false,
-    annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: unavailable('insert_columns'),
+    inputSchema: {
+      spreadsheetId: z.string().min(1),
+      range: z.string().min(1),
+      columns: z.number().int().positive().optional(),
+      position: z.enum(['BEFORE', 'AFTER']).optional(),
+      inheritFromBefore: z.boolean().optional(),
+      values: z.array(z.array(z.any())).optional(),
+      valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional(),
+    },
+    annotations: annotations({ destructive: false, openWorld: false }),
+    handler: async (runtime, input) => result(await runtime.insertColumns(input)),
   },
   {
     name: 'move_spreadsheet',
@@ -434,8 +455,9 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     description: 'Move a spreadsheet to a selected My Drive folder.',
     category: 'sheets',
     readOnly: false,
+    inputSchema: { spreadsheetId: z.string().min(1), folderId: z.string().min(1) },
     annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: unavailable('move_spreadsheet'),
+    handler: async (runtime, input) => result(await runtime.moveSpreadsheet(input)),
   },
 
   legacyOperation('formatting', legacyTools.formatCellsTool, legacyTools.formatCellsHandler, {
@@ -461,7 +483,6 @@ export const OPERATIONS: readonly OperationDefinition[] = [
   }),
   legacyOperation('formatting', legacyTools.mergeCellsTool, legacyTools.mergeCellsHandler, {
     destructive: false,
-    idempotent: true,
   }),
   legacyOperation('formatting', legacyTools.unmergeCellsTool, legacyTools.unmergeCellsHandler),
   legacyOperation('formatting', legacyTools.getMergedCellsTool, legacyTools.handleGetMergedCells, {
@@ -487,7 +508,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     'formatting',
     legacyTools.addConditionalFormattingTool,
     legacyTools.addConditionalFormattingHandler,
-    { destructive: false, idempotent: true }
+    { destructive: false }
   ),
   legacyOperation(
     'formatting',
@@ -522,8 +543,14 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     description: 'Set data validation rules for a range.',
     category: 'formatting',
     readOnly: false,
+    inputSchema: {
+      spreadsheetId: z.string().min(1),
+      range: z.string().min(1),
+      rule: z.record(z.any()),
+      filteredRowsIncluded: z.boolean().optional(),
+    },
     annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: unavailable('set_data_validation'),
+    handler: async (runtime, input) => result(await runtime.setDataValidation(input)),
   },
   {
     name: 'clear_data_validation',
@@ -531,8 +558,9 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     description: 'Clear data validation rules from a range.',
     category: 'formatting',
     readOnly: false,
-    annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: unavailable('clear_data_validation'),
+    inputSchema: { spreadsheetId: z.string().min(1), range: z.string().min(1) },
+    annotations: annotations({ destructive: false, openWorld: false }),
+    handler: async (runtime, input) => result(await runtime.clearDataValidation(input)),
   },
   {
     name: 'set_basic_filter',
@@ -540,8 +568,15 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     description: 'Set a basic filter for a sheet.',
     category: 'formatting',
     readOnly: false,
+    inputSchema: {
+      spreadsheetId: z.string().min(1),
+      range: z.string().min(1),
+      sortSpecs: z.array(z.any()).optional(),
+      filterSpecs: z.array(z.any()).optional(),
+      criteria: z.record(z.any()).optional(),
+    },
     annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: unavailable('set_basic_filter'),
+    handler: async (runtime, input) => result(await runtime.setBasicFilter(input)),
   },
   {
     name: 'clear_basic_filter',
@@ -549,13 +584,13 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     description: 'Clear the basic filter from a sheet.',
     category: 'formatting',
     readOnly: false,
-    annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: unavailable('clear_basic_filter'),
+    inputSchema: { spreadsheetId: z.string().min(1), sheetId: z.number().int() },
+    annotations: annotations({ destructive: false, openWorld: false }),
+    handler: async (runtime, input) => result(await runtime.clearBasicFilter(input)),
   },
 
   legacyOperation('charts', legacyTools.createChartTool, legacyTools.handleCreateChart, {
     destructive: false,
-    idempotent: true,
   }),
   legacyOperation('charts', legacyTools.updateChartTool, legacyTools.handleUpdateChart, {
     destructive: false,
@@ -565,7 +600,6 @@ export const OPERATIONS: readonly OperationDefinition[] = [
 
   legacyOperation('tables', legacyTools.addTableTool, legacyTools.addTableHandler, {
     destructive: false,
-    idempotent: true,
   }),
   legacyOperation('tables', legacyTools.updateTableTool, legacyTools.updateTableHandler, {
     destructive: false,
@@ -595,7 +629,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     category: 'account',
     readOnly: false,
     annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: unavailable('sign_out'),
+    handler: async (runtime) => result(await runtime.signOut()),
   },
 ];
 

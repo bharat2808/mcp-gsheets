@@ -33,4 +33,12 @@ describe('Codex plugin package', () => {
       env_vars: ['GSHEETS_GOOGLE_CLIENT_ID', 'GSHEETS_DATA_DIR'],
     });
   });
+
+  it('ships the Google API client required by retained Desktop OAuth handlers', () => {
+    const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+
+    expect(packageJson.dependencies?.googleapis).toBe('^171.0.0');
+  });
 });

@@ -10,12 +10,12 @@ export function handleError(error: any): ToolResponse {
     errorMessage = 'An unknown error occurred';
   } else if (error.code === 401) {
     errorMessage = 'Authentication failed';
-    helpText = 'Please check that your service account credentials are valid.';
+    helpText = 'Reconnect Google from the local setup URL.';
   } else if (error.code === 403) {
     errorMessage = 'Permission denied';
     helpText =
-      'Please ensure the service account has access to the spreadsheet. ' +
-      'Share the spreadsheet with the service account email address.';
+      'Please ensure the connected Google account has access to the spreadsheet. ' +
+      'Ask the owner to grant that account Editor access.';
   } else if (error.code === 404) {
     errorMessage = 'Spreadsheet or range not found';
     helpText =

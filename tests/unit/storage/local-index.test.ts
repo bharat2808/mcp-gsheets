@@ -22,6 +22,16 @@ afterEach(() => {
 });
 
 describe('LocalIndex', () => {
+  it('persists the encrypted authenticated account identity', () => {
+    const { index, databasePath } = createIndex();
+
+    index.setAccountIdentity('permission-id-1');
+
+    expect(index.getAccountIdentity()).toBe('permission-id-1');
+    index.close();
+    expect(readFileSync(databasePath).includes(Buffer.from('permission-id-1'))).toBe(false);
+  });
+
   it('stores a catalog with explicit freshness state', () => {
     const { index } = createIndex();
     index.upsertSpreadsheet({
