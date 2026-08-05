@@ -7,7 +7,7 @@ description: Search, inspect, refresh, and safely update Google Sheets indexed f
 
 Use the local encrypted index before asking the user for spreadsheet details.
 
-1. Call `get_connection_status` first when connection or freshness is uncertain. Give the returned local setup URL when Google is not connected or no folders are selected.
+1. Call `get_connection_status` first when connection or freshness is uncertain. Give the returned local setup URL when OAuth credentials are missing, Google is not connected, or no folders are selected. The user enters the Desktop OAuth client ID and secret only on that localhost page; never ask for the secret in chat or through an MCP tool.
 2. Use `get_sheets_catalog` to resolve spreadsheet IDs and `explore_spreadsheet` to resolve tab IDs and headers.
 3. Use `search` for row discovery and `fetch` for a complete row. `search` intentionally returns citation metadata only; call `fetch` before using row values. Cite the returned Google Sheets URL when discussing a row.
 4. Call `refresh_sheets_index` when the user requests current data or the catalog says an entry is stale, pending, or unavailable.

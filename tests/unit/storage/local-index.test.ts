@@ -167,4 +167,47 @@ describe('LocalIndex', () => {
     expect(readFileSync(databasePath).includes(Buffer.from('proposal-1'))).toBe(false);
     expect(readFileSync(databasePath).includes(Buffer.from('Paid'))).toBe(false);
   });
+
+  it('clears all account-bound data when OAuth credentials are replaced', () => {
+    const { index } = createIndex();
+    index.upsertSpreadsheet({
+      id: 'spreadsheet-1',
+      name: 'Accounts',
+      path: '/Finance/Accounts',
+      modifiedTime: '2026-08-05T00:00:00.000Z',
+      version: '12',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:01:00.000Z',
+    });
+    index.setSelectedFolderIds(['finance']);
+    index.recordChanges({
+      spreadsheetId: 'spreadsheet-1',
+      spreadsheetName: 'Accounts',
+      sheetId: 91,
+      sheetTitle: 'Payments',
+      detectedAt: '2026-08-05T00:02:00.000Z',
+      changes: [{ kind: 'modified', rows: [2] }],
+    });
+    index.recordWriteAudit({
+      proposalId: 'proposal-1',
+      appliedAt: '2026-08-05T00:03:00.000Z',
+      spreadsheetId: 'spreadsheet-1',
+      sheetId: 91,
+      sheetTitle: 'Payments',
+      operation: 'update',
+      rowNumber: 2,
+      beforeValues: { Status: 'Open' },
+      afterValues: { Status: 'Paid' },
+      updatedRange: 'Payments!D2',
+      verified: true,
+    });
+
+    index.clearAccountData();
+
+    expect(index.getCatalog()).toEqual([]);
+    expect(index.getSelectedFolderIds()).toEqual([]);
+    expect(index.getRecentChanges()).toEqual([]);
+    expect(index.getWriteAudits()).toEqual([]);
+    index.close();
+  });
 });

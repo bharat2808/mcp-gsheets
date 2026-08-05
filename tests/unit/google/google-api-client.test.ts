@@ -3,6 +3,37 @@ import { describe, expect, it, vi } from 'vitest';
 import { GoogleApiClient } from '../../../src/google/google-api-client.js';
 
 describe('GoogleApiClient', () => {
+  it('uses the configured client secret when refreshing an expired token', async () => {
+    let refreshBody = '';
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input) === 'https://oauth2.googleapis.com/token') {
+        refreshBody = String(init?.body);
+        return new Response(JSON.stringify({ access_token: 'next', expires_in: 3600 }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({ files: [] }), { status: 200 });
+    };
+    const client = new GoogleApiClient(
+      {
+        accessToken: 'expired',
+        refreshToken: 'refresh',
+        expiryDate: 0,
+        scope: '',
+        tokenType: 'Bearer',
+      },
+      'client-id',
+      'GOCSPX-secret',
+      vi.fn(),
+      fetcher,
+      () => 1_700_000_000_000
+    );
+
+    await client.listFileGraph();
+
+    expect(new URLSearchParams(refreshBody).get('client_secret')).toBe('GOCSPX-secret');
+  });
+
   it('lists only non-trashed My Drive files and follows pagination', async () => {
     const fetcher = vi
       .fn()
@@ -39,6 +70,7 @@ describe('GoogleApiClient', () => {
         tokenType: 'Bearer',
       },
       'client',
+      'GOCSPX-secret',
       vi.fn(),
       fetcher
     );
@@ -115,6 +147,7 @@ describe('GoogleApiClient', () => {
         tokenType: 'Bearer',
       },
       'client',
+      'GOCSPX-secret',
       vi.fn(),
       fetcher
     );
@@ -178,6 +211,7 @@ describe('GoogleApiClient', () => {
         tokenType: 'Bearer',
       },
       'client',
+      'GOCSPX-secret',
       vi.fn(),
       fetcher
     );
@@ -239,6 +273,7 @@ describe('GoogleApiClient', () => {
         tokenType: 'Bearer',
       },
       'client',
+      'GOCSPX-secret',
       vi.fn(),
       fetcher
     );

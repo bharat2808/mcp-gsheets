@@ -3,10 +3,6 @@ import { posix, win32 } from 'node:path';
 
 export const PUBLISHER_GOOGLE_CLIENT_ID = '';
 
-export function googleClientId(): string {
-  return process.env.GSHEETS_GOOGLE_CLIENT_ID?.trim() || PUBLISHER_GOOGLE_CLIENT_ID;
-}
-
 export function resolveDataDirectory(
   operatingSystem: NodeJS.Platform,
   environment: Readonly<Record<string, string | undefined>>,

@@ -30,6 +30,7 @@ export interface GoogleTokenResponse {
 
 export interface AuthorizationCodeExchangeInput {
   clientId: string;
+  clientSecret: string;
   code: string;
   verifier: string;
   redirectUri: string;
@@ -100,6 +101,7 @@ export async function exchangeAuthorizationCode(
 ): Promise<OAuthTokenSet> {
   const body = new URLSearchParams({
     client_id: input.clientId,
+    client_secret: input.clientSecret,
     code: input.code,
     code_verifier: input.verifier,
     redirect_uri: input.redirectUri,
@@ -111,7 +113,27 @@ export async function exchangeAuthorizationCode(
     body,
   });
   if (!response.ok) {
-    throw new Error(`Google OAuth token exchange failed with HTTP ${response.status}`);
+    let detail = `HTTP ${response.status}`;
+    try {
+      const errorBody = (await response.json()) as {
+        error?: unknown;
+        error_description?: unknown;
+      };
+      if (typeof errorBody.error === 'string') {
+        detail = errorBody.error;
+        if (typeof errorBody.error_description === 'string') {
+          detail += `: ${errorBody.error_description}`;
+        }
+      }
+    } catch {
+      // Keep the status-only fallback for non-JSON provider responses.
+    }
+    for (const sensitive of [input.clientSecret, input.code, input.verifier]) {
+      if (sensitive) {
+        detail = detail.replaceAll(sensitive, '[redacted]');
+      }
+    }
+    throw new Error(`Google OAuth token exchange failed: ${detail}`);
   }
   return toStoredTokenSet((await response.json()) as GoogleTokenResponse, now);
 }

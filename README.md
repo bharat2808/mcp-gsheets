@@ -6,7 +6,7 @@ This fork turns `freema/mcp-gsheets` into a focused, local Codex plugin for Goog
 
 The fork is technically suitable as the base: its Google Sheets operations and MCP setup were reusable, while the public 44-tool surface and service-account startup were replaced. The plugin now exposes 9 model tools and 3 app-only confirmation tools.
 
-One publisher input is intentionally not committed: a Google OAuth **Desktop app** client ID. Production builds should set `PUBLISHER_GOOGLE_CLIENT_ID` in `src/config/runtime.ts`. Development can set `GSHEETS_GOOGLE_CLIENT_ID`. A desktop client has no safely keepable client secret; OAuth uses PKCE and a loopback redirect.
+Google OAuth uses a **Desktop app** client ID and matching client secret. The localhost setup page stores the non-secret ID in the plugin data directory's user-only `config.json` and stores the secret through `@napi-rs/keyring` in the operating-system credential store. OAuth also uses PKCE and a loopback redirect.
 
 ## Develop and run
 
@@ -14,11 +14,11 @@ Requirements: Node.js 22.13 or newer and npm.
 
 ```bash
 npm ci
-GSHEETS_GOOGLE_CLIENT_ID="your-desktop-client-id.apps.googleusercontent.com" npm run build
-GSHEETS_GOOGLE_CLIENT_ID="your-desktop-client-id.apps.googleusercontent.com" npm start
+npm run build
+npm start
 ```
 
-The MCP server runs over stdio. Call `get_connection_status`, open its local setup URL, sign into Google, and select My Drive folders. The setup page never selects shared drives.
+The MCP server runs over stdio. Call `get_connection_status`, open its local setup URL, and enter the ID and secret for a Google OAuth client created with application type **Desktop app**. Then sign into Google and select My Drive folders. The setup page never selects shared drives, and OAuth credentials are never accepted through model-visible MCP tool arguments.
 
 The Codex plugin manifest is `.codex-plugin/plugin.json`; `.mcp.json` launches `dist/index.js`. Build before loading this repository as a local plugin.
 
@@ -27,19 +27,20 @@ The Codex plugin manifest is `.codex-plugin/plugin.json`; `.mcp.json` launches `
 Build the plugin, add this repository as a local marketplace, and install its entry:
 
 ```bash
-export GSHEETS_GOOGLE_CLIENT_ID="your-desktop-client-id.apps.googleusercontent.com"
 npm ci
 npm run build
 codex plugin marketplace add "$PWD"
 codex plugin add gsheets@gsheets-local
 ```
 
-Start a new Codex task from an environment that exports `GSHEETS_GOOGLE_CLIENT_ID`. The optional `GSHEETS_DATA_DIR` variable overrides the operating-system data directory when an isolated test profile is useful. The bundled MCP configuration forwards both variables without storing their values in the repository.
+Start a new Codex task, ask for the connection status, and open the returned localhost page. The optional `GSHEETS_DATA_DIR` variable overrides the operating-system data directory when an isolated test profile is useful. Client-ID resolution uses the environment override first, then local `config.json`, then the publisher default. The client secret is always read from the operating-system credential store.
 
 ## Security and behavior
 
 - OAuth scopes: identity, Drive metadata read-only, and Google Sheets.
 - Tokens and the local AES key use the operating-system credential vault.
+- A user-supplied OAuth client ID is stored outside the repository with user-only file permissions; its matching secret is stored through `@napi-rs/keyring` and never returned through MCP.
+- Replacing locally configured credentials clears OAuth tokens and account-bound indexed data before a different Google account can be connected.
 - Cell payloads, headers, selected folder IDs, and change summaries are AES-256-GCM encrypted in SQLite.
 - Search uses keyed HMAC blind tokens; plaintext row values are not stored.
 - Startup performs catch-up indexing; polling repeats every five minutes while the server is running, and unchanged Drive versions skip content downloads.

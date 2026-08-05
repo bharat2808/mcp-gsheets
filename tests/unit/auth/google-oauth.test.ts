@@ -55,7 +55,7 @@ describe('Google desktop OAuth', () => {
     ).toThrow(/refresh token/i);
   });
 
-  it('exchanges the code with PKCE and no embedded client secret', async () => {
+  it('exchanges the code with PKCE and the configured client secret', async () => {
     let body = '';
     const fetcher: typeof fetch = async (_input, init) => {
       body = String(init?.body);
@@ -74,6 +74,7 @@ describe('Google desktop OAuth', () => {
     const tokens = await exchangeAuthorizationCode(
       {
         clientId: 'client-id',
+        clientSecret: 'GOCSPX-secret',
         code: 'authorization-code',
         verifier: 'verifier',
         redirectUri: 'http://127.0.0.1:5555/oauth/callback',
@@ -84,7 +85,34 @@ describe('Google desktop OAuth', () => {
 
     const params = new URLSearchParams(body);
     expect(params.get('code_verifier')).toBe('verifier');
-    expect(params.has('client_secret')).toBe(false);
+    expect(params.get('client_secret')).toBe('GOCSPX-secret');
     expect(tokens.refreshToken).toBe('refresh');
+  });
+
+  it('reports Google OAuth error details without reflecting request credentials', async () => {
+    const fetcher: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: 'invalid_client',
+          error_description: 'client_secret is missing.',
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } }
+      );
+
+    const exchange = exchangeAuthorizationCode(
+      {
+        clientId: 'client-id',
+        clientSecret: 'GOCSPX-secret',
+        code: 'authorization-code',
+        verifier: 'verifier',
+        redirectUri: 'http://127.0.0.1:5555/oauth/callback',
+      },
+      fetcher
+    );
+
+    await expect(exchange).rejects.toThrow(
+      'Google OAuth token exchange failed: invalid_client: client_secret is missing.'
+    );
+    await expect(exchange).rejects.not.toThrow('GOCSPX-secret');
   });
 });

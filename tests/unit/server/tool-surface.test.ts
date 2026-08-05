@@ -87,6 +87,26 @@ describe('standard search and fetch protocol', () => {
   });
 });
 
+describe('local OAuth client configuration boundary', () => {
+  it('keeps OAuth credential entry out of the model-visible tool surface', async () => {
+    const runtime = {} as GSheetsRuntime;
+    const server = createGSheetsServer(runtime);
+    const client = new Client({ name: 'test', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    try {
+      const listed = await client.listTools();
+      expect(
+        listed.tools.find((candidate) => candidate.name === 'configure_google_oauth_client')
+      ).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
 describe('app-only confirmation boundary', () => {
   it('keeps the approval token out of model-visible content and requires it on approval', async () => {
     const proposal = {

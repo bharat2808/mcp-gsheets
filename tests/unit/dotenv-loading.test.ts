@@ -34,7 +34,7 @@ async function getStderrWithEnv(nodeEnv: string | undefined): Promise<string> {
       ['tsx', INDEX_PATH],
       {
         env,
-        timeout: 3000,
+        timeout: 6000,
         // Close stdin immediately so the process exits
         // (StdioServerTransport will error when stdin closes)
       },

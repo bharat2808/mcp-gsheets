@@ -210,6 +210,23 @@ export class LocalIndex {
       : [];
   }
 
+  clearAccountData(): void {
+    const database = this.#db();
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        DELETE FROM spreadsheets;
+        DELETE FROM settings;
+        DELETE FROM recent_changes;
+        DELETE FROM write_audits;
+      `);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   recordChanges(change: RecentChange): void {
     if (change.changes.length === 0) {
       return;

@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 const SERVICE_NAME = 'gsheets';
 const DATA_KEY_ACCOUNT = 'local-index-key';
 const OAUTH_ACCOUNT = 'google-oauth-token';
+const OAUTH_CLIENT_SECRET_ACCOUNT = 'google-oauth-client-secret';
 
 export interface CredentialBackend {
   getPassword(service: string, account: string): Promise<string | null>;
@@ -70,9 +71,26 @@ export class CredentialVault {
     await this.#backend.setPassword(SERVICE_NAME, OAUTH_ACCOUNT, JSON.stringify(tokens));
   }
 
+  async deleteTokens(): Promise<boolean> {
+    return this.#backend.deletePassword(SERVICE_NAME, OAUTH_ACCOUNT);
+  }
+
+  async loadClientSecret(): Promise<string | null> {
+    return this.#backend.getPassword(SERVICE_NAME, OAUTH_CLIENT_SECRET_ACCOUNT);
+  }
+
+  async saveClientSecret(secret: string): Promise<void> {
+    await this.#backend.setPassword(SERVICE_NAME, OAUTH_CLIENT_SECRET_ACCOUNT, secret);
+  }
+
+  async deleteClientSecret(): Promise<boolean> {
+    return this.#backend.deletePassword(SERVICE_NAME, OAUTH_CLIENT_SECRET_ACCOUNT);
+  }
+
   async clear(): Promise<void> {
     await Promise.all([
       this.#backend.deletePassword(SERVICE_NAME, OAUTH_ACCOUNT),
+      this.#backend.deletePassword(SERVICE_NAME, OAUTH_CLIENT_SECRET_ACCOUNT),
       this.#backend.deletePassword(SERVICE_NAME, DATA_KEY_ACCOUNT),
     ]);
   }

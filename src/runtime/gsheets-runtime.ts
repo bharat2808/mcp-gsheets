@@ -2,8 +2,21 @@ import { join } from 'node:path';
 
 import { CredentialVault, OAuthTokenSet } from '../auth/credential-vault.js';
 import { KeyringBackend } from '../auth/keyring-backend.js';
-import { OAuthSetupServer } from '../auth/setup-server.js';
-import { dataDirectory, googleClientId } from '../config/runtime.js';
+import {
+  OAuthSetupServer,
+  OAuthSetupServerHandle,
+  SetupServerOptions,
+} from '../auth/setup-server.js';
+import {
+  GoogleOAuthClientIdSource,
+  resolveGoogleOAuthClientId,
+  saveLocalGoogleOAuthClientId,
+  validateGoogleOAuthClientId,
+} from '../config/google-oauth-client.js';
+import {
+  dataDirectory as defaultDataDirectory,
+  PUBLISHER_GOOGLE_CLIENT_ID,
+} from '../config/runtime.js';
 import { CellValue } from '../domain/types.js';
 import { buildCatalogTree } from '../drive/catalog.js';
 import { GoogleApiClient } from '../google/google-api-client.js';
@@ -24,40 +37,61 @@ export interface PrepareChangeInput {
   values: Record<string, CellValue>;
 }
 
+export interface GSheetsRuntimeOptions {
+  vault?: CredentialVault;
+  dataDirectory?: string;
+  environment?: Readonly<Record<string, string | undefined>>;
+  publisherClientId?: string;
+  setupServerFactory?: (options: SetupServerOptions) => OAuthSetupServerHandle;
+}
+
 export class GSheetsRuntime {
-  readonly #vault = new CredentialVault(new KeyringBackend());
+  readonly #vault: CredentialVault;
+  readonly #dataDirectory: string;
+  readonly #environment: Readonly<Record<string, string | undefined>>;
+  readonly #publisherClientId: string;
+  readonly #setupServerFactory: (options: SetupServerOptions) => OAuthSetupServerHandle;
   #index: LocalIndex | null = null;
   #client: GoogleApiClient | null = null;
   #sync: SyncService | null = null;
   #proposals: ProposalManager | null = null;
-  #setup: OAuthSetupServer | null = null;
+  #setup: OAuthSetupServerHandle | null = null;
   #setupUrl: string | null = null;
+  #clientId = '';
+  #clientSecret = '';
+  #clientIdSource: GoogleOAuthClientIdSource = 'missing';
   #poller: NodeJS.Timeout | null = null;
   #lastRefresh: RefreshResult | null = null;
   #lastError: string | null = null;
   #refreshPromise: Promise<RefreshResult> | null = null;
 
+  constructor(options: GSheetsRuntimeOptions = {}) {
+    this.#vault = options.vault ?? new CredentialVault(new KeyringBackend());
+    this.#dataDirectory = options.dataDirectory ?? defaultDataDirectory();
+    this.#environment = options.environment ?? process.env;
+    this.#publisherClientId = options.publisherClientId ?? PUBLISHER_GOOGLE_CLIENT_ID;
+    this.#setupServerFactory =
+      options.setupServerFactory ?? ((setupOptions) => new OAuthSetupServer(setupOptions));
+  }
+
   async initialize(): Promise<void> {
     const key = await this.#vault.getOrCreateDataKey();
-    this.#index = new LocalIndex(join(dataDirectory(), 'index.sqlite'), key);
+    this.#index = new LocalIndex(join(this.#dataDirectory, 'index.sqlite'), key);
     this.#index.initialize();
-    const clientId = googleClientId();
-    if (!clientId) {
-      this.#lastError =
-        'This build is missing the publisher Google OAuth desktop client ID. Set GSHEETS_GOOGLE_CLIENT_ID for development.';
-      return;
-    }
-    this.#setup = new OAuthSetupServer({
-      clientId,
-      vault: this.#vault,
-      getSelectedFolderIds: () => this.#requiredIndex().getSelectedFolderIds(),
-      setSelectedFolderIds: (ids) => this.#requiredIndex().setSelectedFolderIds(ids),
-      onConnected: (tokens) => this.#connect(tokens),
+    const resolved = await resolveGoogleOAuthClientId({
+      environment: this.#environment,
+      configPath: this.#configPath(),
+      publisherClientId: this.#publisherClientId,
     });
-    this.#setupUrl = await this.#setup.start();
+    this.#clientId = resolved.clientId;
+    this.#clientIdSource = resolved.source;
+    this.#clientSecret = (await this.#vault.loadClientSecret()) ?? '';
+    await this.#startSetup();
     const tokens = await this.#vault.loadTokens();
-    if (tokens) {
+    if (this.#clientId && this.#clientSecret && tokens) {
       await this.#connect(tokens);
+    } else if (!this.#clientId || !this.#clientSecret) {
+      this.#lastError = 'Open the local setup URL to configure Google OAuth credentials.';
     }
   }
 
@@ -65,6 +99,8 @@ export class GSheetsRuntime {
     return {
       connected: Boolean(this.#client),
       setupUrl: this.#setupUrl,
+      clientIdSource: this.#clientIdSource,
+      credentialsConfigured: Boolean(this.#clientId && this.#clientSecret),
       selectedFolderCount: this.#index?.getSelectedFolderIds().length ?? 0,
       lastRefresh: this.#lastRefresh,
       refreshing: Boolean(this.#refreshPromise),
@@ -253,16 +289,18 @@ export class GSheetsRuntime {
   }
 
   async close(): Promise<void> {
-    if (this.#poller) {
-      clearInterval(this.#poller);
-    }
+    this.#disconnect();
     this.#setup?.stop();
     this.#index?.close();
   }
 
   async #connect(tokens: OAuthTokenSet): Promise<void> {
-    const clientId = googleClientId();
-    this.#client = new GoogleApiClient(tokens, clientId, (next) => this.#vault.saveTokens(next));
+    if (!this.#clientId || !this.#clientSecret) {
+      throw new Error('Google OAuth client credentials are not configured');
+    }
+    this.#client = new GoogleApiClient(tokens, this.#clientId, this.#clientSecret, (next) =>
+      this.#vault.saveTokens(next)
+    );
     this.#sync = new SyncService(this.#requiredIndex(), this.#client, this.#client);
     this.#proposals = new ProposalManager(this.#client);
     try {
@@ -280,6 +318,103 @@ export class GSheetsRuntime {
       );
       this.#poller.unref();
     }
+  }
+
+  async #startSetup(): Promise<void> {
+    const setup = this.#setupServerFactory({
+      vault: this.#vault,
+      getClientCredentials: async () =>
+        this.#clientId && this.#clientSecret
+          ? { clientId: this.#clientId, clientSecret: this.#clientSecret }
+          : null,
+      saveClientCredentials: (credentials) => this.#saveClientCredentials(credentials),
+      getSelectedFolderIds: () => this.#requiredIndex().getSelectedFolderIds(),
+      setSelectedFolderIds: (ids) => this.#requiredIndex().setSelectedFolderIds(ids),
+      onConnected: (tokens) => this.#connect(tokens),
+    });
+    try {
+      const setupUrl = await setup.start();
+      this.#setup = setup;
+      this.#setupUrl = setupUrl;
+    } catch (error) {
+      setup.stop();
+      throw error;
+    }
+  }
+
+  async #saveClientCredentials(credentials: {
+    clientId: string;
+    clientSecret: string;
+  }): Promise<void> {
+    const clientId = validateGoogleOAuthClientId(credentials.clientId);
+    const clientSecret = credentials.clientSecret.trim();
+    if (!clientSecret) {
+      throw new Error('Google OAuth client secret is required');
+    }
+    if (
+      (this.#clientIdSource === 'environment' || this.#clientIdSource === 'publisher') &&
+      clientId !== this.#clientId
+    ) {
+      throw new Error(
+        `Google OAuth client ID is managed by ${this.#clientIdSource} and cannot be replaced here`
+      );
+    }
+
+    const previousClientId = this.#clientId;
+    const previousClientSecret = this.#clientSecret;
+    const previousSource = this.#clientIdSource;
+    const replacement =
+      Boolean(previousClientId || previousClientSecret) &&
+      (clientId !== previousClientId || clientSecret !== previousClientSecret);
+
+    try {
+      await this.#vault.saveClientSecret(clientSecret);
+      if (previousSource !== 'environment' && previousSource !== 'publisher') {
+        await saveLocalGoogleOAuthClientId(clientId, this.#configPath());
+      }
+    } catch (error) {
+      if (previousClientSecret) {
+        await this.#vault.saveClientSecret(previousClientSecret);
+      } else {
+        await this.#vault.deleteClientSecret();
+      }
+      if (previousSource === 'local_config' && previousClientId) {
+        await saveLocalGoogleOAuthClientId(previousClientId, this.#configPath());
+      }
+      throw error;
+    }
+
+    if (replacement) {
+      if (this.#refreshPromise) {
+        await this.#refreshPromise.catch(() => undefined);
+      }
+      this.#disconnect();
+      await this.#vault.deleteTokens();
+      this.#requiredIndex().clearAccountData();
+      this.#lastRefresh = null;
+    }
+
+    this.#clientId = clientId;
+    this.#clientSecret = clientSecret;
+    this.#clientIdSource =
+      previousSource === 'environment' || previousSource === 'publisher'
+        ? previousSource
+        : 'local_config';
+    this.#lastError = null;
+  }
+
+  #disconnect(): void {
+    if (this.#poller) {
+      clearInterval(this.#poller);
+      this.#poller = null;
+    }
+    this.#client = null;
+    this.#sync = null;
+    this.#proposals = null;
+  }
+
+  #configPath(): string {
+    return join(this.#dataDirectory, 'config.json');
   }
 
   #requiredIndex(): LocalIndex {

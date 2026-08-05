@@ -1,6 +1,6 @@
 # GSheets local plugin architecture
 
-The plugin is a local stdio MCP server. Google OAuth uses the installed-app loopback flow with PKCE and no client secret. OAuth tokens and the 256-bit local data key are stored in the operating-system credential vault through `@napi-rs/keyring`.
+The plugin is a local stdio MCP server. Google OAuth uses the installed-app loopback flow with PKCE and a Desktop client secret when exchanging and refreshing tokens. OAuth tokens, the client secret, and the 256-bit local data key are stored as separate entries in the operating-system credential vault through `@napi-rs/keyring`. A user-supplied Desktop OAuth client ID is stored separately in the plugin data directory's user-only `config.json`; environment configuration takes precedence, followed by this local file and then the publisher fallback.
 
 Only Google Sheets beneath explicitly selected My Drive folders enter the catalog. Files carrying a shared-drive ID are discarded. At startup and every five minutes while the server is running, the server checks Drive file versions. Sheet values are downloaded and compared only when a version changed, then encrypted SQLite row snapshots and native table metadata are transactionally replaced. Each row keeps formatted values for search/preview and raw values for type-safe conflict checks. Search uses HMAC blind tokens over both forms; cell payloads, headers, tables, selected folder IDs, change summaries, and write audits are AES-256-GCM encrypted at rest.
 

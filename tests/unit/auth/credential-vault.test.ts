@@ -51,4 +51,36 @@ describe('CredentialVault', () => {
     await vault.clear();
     expect(await vault.loadTokens()).toBeNull();
   });
+
+  it('stores the OAuth client secret separately and deletes only OAuth tokens', async () => {
+    const backend = new MemoryBackend();
+    const vault = new CredentialVault(backend);
+    const dataKey = await vault.getOrCreateDataKey();
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_800_000_000_000,
+      scope: 'openid email',
+      tokenType: 'Bearer',
+    });
+
+    await vault.deleteTokens();
+
+    expect(await vault.loadTokens()).toBeNull();
+    expect(await vault.loadClientSecret()).toBe('GOCSPX-secret');
+    expect(await vault.getOrCreateDataKey()).toEqual(dataKey);
+  });
+
+  it('deletes the OAuth client secret without clearing the data key', async () => {
+    const backend = new MemoryBackend();
+    const vault = new CredentialVault(backend);
+    const dataKey = await vault.getOrCreateDataKey();
+    await vault.saveClientSecret('GOCSPX-secret');
+
+    await vault.deleteClientSecret();
+
+    expect(await vault.loadClientSecret()).toBeNull();
+    expect(await vault.getOrCreateDataKey()).toEqual(dataKey);
+  });
 });
