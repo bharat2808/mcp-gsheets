@@ -70,7 +70,7 @@ describe('public MCP tool surface', () => {
     }
   });
 
-  it('executes the sign-out primitive through the account operation', async () => {
+  it('keeps sign-out non-executable until reviewed routing is available', async () => {
     const signOut = vi.fn().mockResolvedValue({ signedOut: true });
     const server = createGSheetsServer({ signOut } as unknown as GSheetsRuntime, {
       GSHEETS_TOOL_CATEGORIES: 'account',
@@ -81,9 +81,11 @@ describe('public MCP tool surface', () => {
 
     try {
       const response = await categoryClient.callTool({ name: 'sign_out', arguments: {} });
-      expect(response.isError).not.toBe(true);
-      expect(JSON.stringify(response.content)).toContain('signedOut');
-      expect(signOut).toHaveBeenCalledOnce();
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain(
+        'sign_out requires the reviewed account-action flow'
+      );
+      expect(signOut).not.toHaveBeenCalled();
     } finally {
       await categoryClient.close();
       await server.close();

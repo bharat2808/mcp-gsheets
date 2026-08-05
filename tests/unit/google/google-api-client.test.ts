@@ -72,7 +72,9 @@ describe('GoogleApiClient', () => {
       'client',
       'GOCSPX-secret',
       vi.fn(),
-      fetcher
+      fetcher,
+      Date.now,
+      { authorizeSpreadsheet: async () => {} }
     );
 
     const files = await client.listFileGraph();
@@ -149,7 +151,9 @@ describe('GoogleApiClient', () => {
       'client',
       'GOCSPX-secret',
       vi.fn(),
-      fetcher
+      fetcher,
+      Date.now,
+      { authorizeSpreadsheet: async () => {} }
     );
 
     await expect(
@@ -213,7 +217,9 @@ describe('GoogleApiClient', () => {
       'client',
       'GOCSPX-secret',
       vi.fn(),
-      fetcher
+      fetcher,
+      Date.now,
+      { authorizeSpreadsheet: async () => {} }
     );
 
     await expect(
@@ -275,7 +281,9 @@ describe('GoogleApiClient', () => {
       'client',
       'GOCSPX-secret',
       vi.fn(),
-      fetcher
+      fetcher,
+      Date.now,
+      { authorizeSpreadsheet: async () => {} }
     );
 
     await client.apply({

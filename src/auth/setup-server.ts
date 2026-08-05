@@ -154,7 +154,6 @@ export class OAuthSetupServer implements OAuthSetupServerHandle {
       verifier: this.#verifier,
       redirectUri: `${this.#setupUrl}/oauth/callback`,
     });
-    await this.options.vault.saveTokens(tokens);
     await this.options.onConnected(tokens);
     this.#state = null;
     this.#verifier = null;

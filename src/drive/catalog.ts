@@ -11,6 +11,7 @@ export interface DriveFileMetadata {
   modifiedTime?: string;
   version?: string;
   driveId?: string;
+  ownedByMe?: boolean;
 }
 
 export interface CatalogTreeFolder {

@@ -11,13 +11,14 @@ import {
 } from '../../../src/auth/google-oauth.js';
 
 describe('Google desktop OAuth', () => {
-  it('requires drive.file and reports it as a re-consent gap for legacy tokens', () => {
-    expect(GOOGLE_OAUTH_SCOPES).toContain('https://www.googleapis.com/auth/drive.file');
+  it('requires full Drive access and removes the drive.file scope', () => {
+    expect(GOOGLE_OAUTH_SCOPES).toContain('https://www.googleapis.com/auth/drive');
+    expect(GOOGLE_OAUTH_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.file');
     expect(
       missingGoogleOAuthScopes(
         'https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/spreadsheets'
       )
-    ).toEqual(['https://www.googleapis.com/auth/drive.file']);
+    ).toEqual(['https://www.googleapis.com/auth/drive']);
   });
 
   it('creates an S256 PKCE pair', () => {
@@ -27,7 +28,7 @@ describe('Google desktop OAuth', () => {
     expect(pair.method).toBe('S256');
   });
 
-  it('requests offline Sheets and Drive metadata access', () => {
+  it('requests offline Sheets and full Drive access', () => {
     const url = new URL(
       buildGoogleAuthorizationUrl({
         clientId: 'client-id',
@@ -42,7 +43,7 @@ describe('Google desktop OAuth', () => {
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('scope')).toContain('https://www.googleapis.com/auth/spreadsheets');
     expect(url.searchParams.get('scope')).toContain(
-      'https://www.googleapis.com/auth/drive.metadata.readonly'
+      'https://www.googleapis.com/auth/drive'
     );
   });
 

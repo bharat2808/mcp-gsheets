@@ -407,21 +407,42 @@ export class GSheetsRuntime {
     if (!this.#clientId || !this.#clientSecret) {
       throw new Error('Google OAuth client credentials are not configured');
     }
-    this.#missingScopes = missingGoogleOAuthScopes(tokens.scope);
-    if (this.#missingScopes.length > 0) {
-      this.#disconnect();
-      this.#lastError = 'Google access must be re-consented to enable Drive file operations.';
-      return;
+    const missingScopes = missingGoogleOAuthScopes(tokens.scope);
+    if (missingScopes.length > 0) {
+      throw new Error(`Google token is missing required OAuth scopes: ${missingScopes.join(', ')}`);
     }
-    const client = new GoogleSheetsGateway(tokens, this.#clientId, this.#clientSecret, (next) =>
-      this.#vault.saveTokens(next)
+    let stagedTokens = tokens;
+    let tokensCommitted = false;
+    const client = new GoogleSheetsGateway(
+      tokens,
+      this.#clientId,
+      this.#clientSecret,
+      async (next) => {
+        stagedTokens = next;
+        if (tokensCommitted) {
+          await this.#vault.saveTokens(next);
+        }
+      },
+      fetch,
+      Date.now,
+      { getSelectedFolderIds: () => this.#requiredIndex().getSelectedFolderIds() }
     );
     const accountIdentity = await client.getAccountIdentity();
-    const previousIdentity = this.#requiredIndex().getAccountIdentity();
-    if (previousIdentity && previousIdentity !== accountIdentity) {
-      this.#requiredIndex().clearAccountData();
+    const previousTokens = await this.#vault.loadTokens();
+    try {
+      await this.#vault.saveTokens(stagedTokens);
+      this.#requiredIndex().adoptAccountIdentity(accountIdentity);
+    } catch (error) {
+      if (previousTokens) {
+        await this.#vault.saveTokens(previousTokens);
+      } else {
+        await this.#vault.deleteTokens();
+      }
+      throw error;
     }
-    this.#requiredIndex().setAccountIdentity(accountIdentity);
+    tokensCommitted = true;
+    this.#disconnect();
+    this.#missingScopes = [];
     this.#client = client;
     this.#sync = new SyncService(this.#requiredIndex(), this.#client, this.#client);
     this.#proposals = new ProposalManager(this.#client);

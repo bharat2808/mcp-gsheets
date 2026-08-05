@@ -148,7 +148,7 @@ describe('registry annotations', () => {
     });
   });
 
-  it('leaves destructive operations at the destructive default', () => {
+  it('leaves legacy destructive operations at the destructive default', () => {
     const annotations = operation('delete_sheet').annotations;
     expect(annotations.destructiveHint).toBeUndefined();
     expect(annotations.readOnlyHint).toBeUndefined();
@@ -166,11 +166,10 @@ describe('registry annotations', () => {
     expect(operation('update_values').annotations.idempotentHint).toBe(true);
   });
 
-  it('never emits annotations that merely restate MCP defaults', () => {
+  it('omits unrelated MCP defaults', () => {
     for (const entry of OPERATIONS) {
       const annotations = entry.annotations;
       expect(annotations.readOnlyHint).not.toBe(false);
-      expect(annotations.destructiveHint).not.toBe(true);
       expect(annotations.idempotentHint).not.toBe(false);
       expect(annotations.openWorldHint).not.toBe(true);
     }

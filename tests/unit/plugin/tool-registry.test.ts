@@ -98,7 +98,6 @@ describe('gsheets operation registry', () => {
       clearDataValidation: vi.fn().mockResolvedValue({ ok: 'clear_data_validation' }),
       setBasicFilter: vi.fn().mockResolvedValue({ ok: 'set_basic_filter' }),
       clearBasicFilter: vi.fn().mockResolvedValue({ ok: 'clear_basic_filter' }),
-      signOut: vi.fn().mockResolvedValue({ signedOut: true }),
     };
     const inputs: Record<string, Record<string, unknown>> = {
       insert_columns: { spreadsheetId: 'book', range: 'Plan!B2' },
@@ -107,7 +106,6 @@ describe('gsheets operation registry', () => {
       clear_data_validation: { spreadsheetId: 'book', range: 'Plan!A2:A9' },
       set_basic_filter: { spreadsheetId: 'book', range: 'Plan!A1:D9' },
       clear_basic_filter: { spreadsheetId: 'book', sheetId: 7 },
-      sign_out: {},
     };
 
     for (const [name, input] of Object.entries(inputs)) {
@@ -122,6 +120,18 @@ describe('gsheets operation registry', () => {
     expect(runtime.clearDataValidation).toHaveBeenCalled();
     expect(runtime.setBasicFilter).toHaveBeenCalled();
     expect(runtime.clearBasicFilter).toHaveBeenCalled();
-    expect(runtime.signOut).toHaveBeenCalled();
+  });
+
+  it('marks parent moves, clears, and future reviewed sign-out as destructive', () => {
+    for (const name of [
+      'move_spreadsheet',
+      'clear_data_validation',
+      'clear_basic_filter',
+      'sign_out',
+    ]) {
+      expect(OPERATIONS.find((operation) => operation.name === name)?.annotations.destructiveHint).toBe(
+        true
+      );
+    }
   });
 });

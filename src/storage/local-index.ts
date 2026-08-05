@@ -228,6 +228,32 @@ export class LocalIndex {
       : null;
   }
 
+  adoptAccountIdentity(identity: string): void {
+    const database = this.#db();
+    const previousIdentity = this.getAccountIdentity();
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      if (previousIdentity && previousIdentity !== identity) {
+        database.exec(`
+          DELETE FROM spreadsheets;
+          DELETE FROM settings;
+          DELETE FROM recent_changes;
+          DELETE FROM write_audits;
+        `);
+      }
+      database
+        .prepare(
+          `INSERT INTO settings (key, encrypted_value) VALUES ('account-identity', ?)
+           ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`
+        )
+        .run(encryptJson(this.#key, identity, 'setting:account-identity'));
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   clearAccountData(): void {
     const database = this.#db();
     database.exec('BEGIN IMMEDIATE');

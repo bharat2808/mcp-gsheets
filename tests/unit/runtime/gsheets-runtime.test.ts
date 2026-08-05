@@ -65,7 +65,138 @@ afterEach(async () => {
 });
 
 describe('GSheetsRuntime OAuth credential bootstrap', () => {
-  it('requires re-consent for drive.file without deleting the encrypted catalog', async () => {
+  it('keeps the prior token and catalog when re-consent omits full Drive scope', async () => {
+    const { runtime, directory, vault, getSetupOptions } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    const priorTokens = {
+      accessToken: 'prior-access',
+      refreshToken: 'prior-refresh',
+      expiryDate: 1_900_000_000_000,
+      scope:
+        'https://www.googleapis.com/auth/drive.metadata.readonly https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    };
+    await vault.saveTokens(priorTokens);
+    const key = await vault.getOrCreateDataKey();
+    const index = new LocalIndex(join(directory, 'index.sqlite'), key);
+    index.initialize();
+    index.upsertSpreadsheet({
+      id: 'preserved-sheet', name: 'Preserved', path: '/Preserved', modifiedTime: '',
+      version: '1', indexStatus: 'current', lastIndexedAt: null,
+    });
+    index.close();
+    await runtime.initialize();
+
+    await expect(
+      getSetupOptions()?.onConnected({
+        ...priorTokens,
+        accessToken: 'bad-reconsent',
+        scope: 'https://www.googleapis.com/auth/spreadsheets',
+      })
+    ).rejects.toThrow('missing required OAuth scopes');
+
+    expect(await vault.loadTokens()).toEqual(priorTokens);
+    expect(runtime.catalog().spreadsheets.map((entry) => entry.id)).toEqual(['preserved-sheet']);
+    await runtime.close();
+  });
+
+  it('keeps the prior token and catalog when re-consent account validation fails', async () => {
+    const { runtime, directory, vault, getSetupOptions } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    const priorTokens = {
+      accessToken: 'prior-access', refreshToken: 'prior-refresh', expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/spreadsheets', tokenType: 'Bearer',
+    };
+    await vault.saveTokens(priorTokens);
+    const key = await vault.getOrCreateDataKey();
+    const index = new LocalIndex(join(directory, 'index.sqlite'), key);
+    index.initialize();
+    index.upsertSpreadsheet({
+      id: 'preserved-sheet', name: 'Preserved', path: '/Preserved', modifiedTime: '',
+      version: '1', indexStatus: 'current', lastIndexedAt: null,
+    });
+    index.close();
+    await runtime.initialize();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 503 })));
+
+    await expect(
+      getSetupOptions()?.onConnected({
+        accessToken: 'candidate-access', refreshToken: 'candidate-refresh',
+        expiryDate: 1_900_000_000_000,
+        scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+        tokenType: 'Bearer',
+      })
+    ).rejects.toThrow(/HTTP 503/u);
+
+    expect(await vault.loadTokens()).toEqual(priorTokens);
+    expect(runtime.catalog().spreadsheets.map((entry) => entry.id)).toEqual(['preserved-sheet']);
+    vi.unstubAllGlobals();
+    await runtime.close();
+  });
+
+  it('forces an index refresh after returning a partial spreadsheet creation', async () => {
+    const { runtime, directory, vault } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access', refreshToken: 'refresh', expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    const key = await vault.getOrCreateDataKey();
+    const index = new LocalIndex(join(directory, 'index.sqlite'), key);
+    index.initialize();
+    index.setSelectedFolderIds(['folder-1']);
+    index.close();
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ user: { permissionId: 'account-1' } }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', fetcher);
+    const refresh = vi.spyOn(runtime, 'refresh').mockResolvedValue({} as any);
+    await runtime.initialize();
+    fetcher.mockReset();
+    fetcher
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'folder-1', name: 'Folder', mimeType: 'application/vnd.google-apps.folder',
+        parents: ['root-id'], ownedByMe: true,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'root-id', name: 'My Drive', mimeType: 'application/vnd.google-apps.folder',
+        parents: [], ownedByMe: true,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        spreadsheetId: 'created-book', properties: { title: 'Created' },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'created-book', name: 'Created', mimeType: 'application/vnd.google-apps.spreadsheet',
+        parents: ['root-id'], ownedByMe: true,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }));
+
+    await expect(
+      runtime.createSpreadsheet({ title: 'Created', folderId: 'folder-1' })
+    ).resolves.toMatchObject({ spreadsheetId: 'created-book', partialCreation: true });
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    vi.unstubAllGlobals();
+    await runtime.close();
+  });
+
+  it('requires re-consent for full Drive access without deleting the encrypted catalog', async () => {
     const { runtime, directory, vault } = await createRuntime();
     await writeFile(
       join(directory, 'config.json'),
@@ -105,7 +236,7 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     expect(runtime.status()).toMatchObject({
       connected: false,
       reConsentRequired: true,
-      missingScopes: ['https://www.googleapis.com/auth/drive.file'],
+      missingScopes: ['https://www.googleapis.com/auth/drive'],
       selectedFolderCount: 1,
     });
     expect(runtime.catalog().spreadsheets.map((entry) => entry.id)).toEqual(['existing-sheet']);
@@ -127,8 +258,7 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
       refreshToken: 'refresh',
       expiryDate: 1_900_000_000_000,
       scope: [
-        'https://www.googleapis.com/auth/drive.metadata.readonly',
-        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/drive',
         'https://www.googleapis.com/auth/spreadsheets',
       ].join(' '),
       tokenType: 'Bearer',

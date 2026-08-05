@@ -116,8 +116,8 @@ function annotations(options: {
   if (options.readOnly) {
     value.readOnlyHint = true;
   }
-  if (options.destructive === false) {
-    value.destructiveHint = false;
+  if (options.destructive !== undefined) {
+    value.destructiveHint = options.destructive;
   }
   if (options.idempotent) {
     value.idempotentHint = true;
@@ -456,7 +456,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     category: 'sheets',
     readOnly: false,
     inputSchema: { spreadsheetId: z.string().min(1), folderId: z.string().min(1) },
-    annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
+    annotations: annotations({ destructive: true, openWorld: false }),
     handler: async (runtime, input) => result(await runtime.moveSpreadsheet(input)),
   },
 
@@ -559,7 +559,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     category: 'formatting',
     readOnly: false,
     inputSchema: { spreadsheetId: z.string().min(1), range: z.string().min(1) },
-    annotations: annotations({ destructive: false, openWorld: false }),
+    annotations: annotations({ destructive: true, openWorld: false }),
     handler: async (runtime, input) => result(await runtime.clearDataValidation(input)),
   },
   {
@@ -585,7 +585,7 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     category: 'formatting',
     readOnly: false,
     inputSchema: { spreadsheetId: z.string().min(1), sheetId: z.number().int() },
-    annotations: annotations({ destructive: false, openWorld: false }),
+    annotations: annotations({ destructive: true, openWorld: false }),
     handler: async (runtime, input) => result(await runtime.clearBasicFilter(input)),
   },
 
@@ -628,8 +628,12 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     description: 'Sign out the connected Google account.',
     category: 'account',
     readOnly: false,
-    annotations: annotations({ destructive: false, idempotent: true, openWorld: false }),
-    handler: async (runtime) => result(await runtime.signOut()),
+    annotations: annotations({ destructive: true, idempotent: true, openWorld: false }),
+    handler: () => {
+      throw new Error(
+        'sign_out requires the reviewed account-action flow and is not executable yet'
+      );
+    },
   },
 ];
 

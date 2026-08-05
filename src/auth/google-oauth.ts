@@ -3,8 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { OAuthTokenSet } from './credential-vault.js';
 
 export const GOOGLE_OAUTH_SCOPES = [
-  'https://www.googleapis.com/auth/drive.metadata.readonly',
-  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/spreadsheets',
 ] as const;
 

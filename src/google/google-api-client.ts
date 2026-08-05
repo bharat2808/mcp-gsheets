@@ -16,6 +16,8 @@ export interface GoogleSheetsGatewayPolicy {
 interface GoogleSheetsGatewayOptions {
   sheetsClient?: unknown;
   sleep?: (milliseconds: number) => Promise<void>;
+  getSelectedFolderIds?: () => readonly string[];
+  authorizeSpreadsheet?: (spreadsheetId: string) => Promise<void>;
 }
 
 export class GoogleSheetsGatewayError extends Error {
@@ -153,7 +155,10 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       get: (target, property) => {
         const member = Reflect.get(target, property);
         if (typeof member === 'function') {
-          return (...args: unknown[]) => {
+          return async (...args: unknown[]) => {
+            for (const spreadsheetId of this.#spreadsheetIds(args[0])) {
+              await this.authorizeSpreadsheet(spreadsheetId);
+            }
             const requestArgs = [...args];
             const options = requestArgs[1];
             requestArgs[1] =
@@ -169,6 +174,24 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
         return this.#wrapApi(member, policy);
       },
     });
+  }
+
+  #spreadsheetIds(value: unknown): string[] {
+    const ids = new Set<string>();
+    const visit = (candidate: unknown): void => {
+      if (!candidate || typeof candidate !== 'object') {
+        return;
+      }
+      for (const [key, nested] of Object.entries(candidate)) {
+        if (/spreadsheetid$/iu.test(key) && typeof nested === 'string') {
+          ids.add(nested);
+        } else {
+          visit(nested);
+        }
+      }
+    };
+    visit(value);
+    return [...ids];
   }
 
   async #request<T>(operation: () => Promise<T>, idempotent: boolean): Promise<T> {
@@ -233,7 +256,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       url.searchParams.set('pageSize', '1000');
       url.searchParams.set(
         'fields',
-        'nextPageToken,files(id,name,mimeType,parents,modifiedTime,version,driveId)'
+        'nextPageToken,files(id,name,mimeType,parents,modifiedTime,version,driveId,ownedByMe)'
       );
       if (pageToken) {
         url.searchParams.set('pageToken', pageToken);
@@ -272,7 +295,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       throw new Error(`Folder ${folderId} is not one of the selected My Drive folders`);
     }
     const folder = await this.#json<DriveFileMetadata & { trashed?: boolean }>(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folderId)}?fields=id%2Cname%2CmimeType%2Cparents%2CdriveId%2Ctrashed`
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folderId)}?fields=id%2Cname%2CmimeType%2Cparents%2CdriveId%2CownedByMe%2Ctrashed`
     );
     if (folder.driveId) {
       throw new Error('Shared Drive folders are not supported');
@@ -280,7 +303,39 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     if (folder.mimeType !== 'application/vnd.google-apps.folder' || folder.trashed) {
       throw new Error(`Folder ${folderId} is not an accessible My Drive folder`);
     }
+    if (folder.ownedByMe !== true) {
+      throw new Error(`Folder ${folderId} is not owned by the authenticated account`);
+    }
+    const root = await this.#rootFolder();
+    if (!(await this.#ancestryReachesRoot(folder.parents ?? [], root.id))) {
+      throw new Error(`Folder ${folderId} is not inside the authenticated My Drive`);
+    }
     return { ...folder, parents: folder.parents ?? [] };
+  }
+
+  async authorizeSpreadsheet(spreadsheetId: string): Promise<void> {
+    if (this.options.authorizeSpreadsheet) {
+      await this.options.authorizeSpreadsheet(spreadsheetId);
+      return;
+    }
+    const selectedFolderIds = this.options.getSelectedFolderIds?.() ?? [];
+    if (selectedFolderIds.length === 0) {
+      throw new Error('No My Drive folders are selected');
+    }
+    const spreadsheet = await this.#driveFile(spreadsheetId);
+    if (spreadsheet.driveId) {
+      throw new Error('Shared Drive spreadsheets are not supported');
+    }
+    if (spreadsheet.ownedByMe !== true) {
+      throw new Error(`Spreadsheet ${spreadsheetId} is not owned by the authenticated account`);
+    }
+    if (spreadsheet.mimeType !== 'application/vnd.google-apps.spreadsheet') {
+      throw new Error(`File ${spreadsheetId} is not a Google Sheets spreadsheet`);
+    }
+    const root = await this.#rootFolder();
+    if (!(await this.#ancestryReachesSelection(spreadsheet.parents, selectedFolderIds, root.id))) {
+      throw new Error(`Spreadsheet ${spreadsheetId} is not inside a selected My Drive folder`);
+    }
   }
 
   async createSpreadsheet(
@@ -291,6 +346,8 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     spreadsheetUrl?: string;
     title: string;
     folderId?: string;
+    partialCreation?: true;
+    placement?: { status: 'unverified'; error: string };
   }> {
     if (input.folderId) {
       await this.validateSelectedMyDriveFolder(input.folderId, selectedFolderIds);
@@ -320,7 +377,21 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       throw new Error('Google Sheets did not return the created spreadsheet ID');
     }
     if (input.folderId) {
-      await this.#moveSpreadsheetToFolder(created.spreadsheetId, input.folderId);
+      try {
+        await this.#moveSpreadsheetToFolder(created.spreadsheetId, input.folderId);
+      } catch (error) {
+        return {
+          spreadsheetId: created.spreadsheetId,
+          ...(created.spreadsheetUrl ? { spreadsheetUrl: created.spreadsheetUrl } : {}),
+          title: created.properties?.title ?? input.title,
+          folderId: input.folderId,
+          partialCreation: true,
+          placement: {
+            status: 'unverified',
+            error: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
     }
     return {
       spreadsheetId: created.spreadsheetId,
@@ -335,6 +406,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     folderId: string,
     selectedFolderIds: readonly string[]
   ): Promise<{ spreadsheetId: string; folderId: string; verified: true }> {
+    await this.authorizeSpreadsheet(spreadsheetId);
     await this.validateSelectedMyDriveFolder(folderId, selectedFolderIds);
     await this.#moveSpreadsheetToFolder(spreadsheetId, folderId);
     return { spreadsheetId, folderId, verified: true };
@@ -383,35 +455,40 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     }
     const anchorColumn = this.#columnIndex(match[1].toUpperCase());
     const startIndex = (input.position ?? 'BEFORE') === 'AFTER' ? anchorColumn + 1 : anchorColumn;
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: input.spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            insertDimension: {
-              range: {
-                sheetId,
-                dimension: 'COLUMNS',
-                startIndex,
-                endIndex: startIndex + columns,
-              },
-              inheritFromBefore: input.inheritFromBefore ?? false,
-            },
+    const startRow = Number(match[2]);
+    const updatedRange = input.values?.length
+      ? `${quoteSheetTitle(resolvedTitle)}!${columnName(startIndex)}${startRow}:${columnName(startIndex + valueWidth - 1)}${startRow + input.values.length - 1}`
+      : undefined;
+    const requests: Array<Record<string, unknown>> = [
+      {
+        insertDimension: {
+          range: {
+            sheetId,
+            dimension: 'COLUMNS',
+            startIndex,
+            endIndex: startIndex + columns,
           },
-        ],
+          inheritFromBefore: input.inheritFromBefore ?? false,
+        },
       },
-    });
-    let updatedRange: string | undefined;
+    ];
     if (input.values?.length) {
-      const startRow = Number(match[2]);
-      updatedRange = `${quoteSheetTitle(resolvedTitle)}!${columnName(startIndex)}${startRow}:${columnName(startIndex + valueWidth - 1)}${startRow + input.values.length - 1}`;
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: input.spreadsheetId,
-        range: updatedRange,
-        valueInputOption: input.valueInputOption ?? 'USER_ENTERED',
-        requestBody: { values: input.values },
+      requests.push({
+        updateCells: {
+          start: { sheetId, rowIndex: startRow - 1, columnIndex: startIndex },
+          rows: input.values.map((row) => ({
+            values: row.map((value) => ({
+              ...this.#cellData(value, input.valueInputOption ?? 'USER_ENTERED'),
+            })),
+          })),
+          fields: 'userEnteredValue',
+        },
       });
     }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: { requests },
+    });
     return {
       spreadsheetId: input.spreadsheetId,
       insertedColumns: columns,
@@ -527,6 +604,25 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
     return result - 1;
   }
 
+  #cellData(value: unknown, inputOption: 'RAW' | 'USER_ENTERED') {
+    if (value === null || value === undefined) {
+      return {};
+    }
+    if (typeof value === 'boolean') {
+      return { userEnteredValue: { boolValue: value } };
+    }
+    if (typeof value === 'number') {
+      return { userEnteredValue: { numberValue: value } };
+    }
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    return {
+      userEnteredValue:
+        inputOption === 'USER_ENTERED' && text.startsWith('=')
+          ? { formulaValue: text }
+          : { stringValue: text },
+    };
+  }
+
   async #moveSpreadsheetToFolder(spreadsheetId: string, folderId: string): Promise<void> {
     const file = await this.#driveFile(spreadsheetId);
     if (file.driveId) {
@@ -544,7 +640,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       url.searchParams.set('removeParents', parentsToRemove.join(','));
     }
     url.searchParams.set('fields', 'id,parents,driveId');
-    await this.#json(url, { method: 'PATCH' }, true);
+    await this.#json(url, { method: 'PATCH' }, false);
     const verified = await this.#driveFile(spreadsheetId);
     if (verified.driveId || !verified.parents.includes(folderId)) {
       throw new Error(`Google Drive did not verify placement in folder ${folderId}`);
@@ -553,9 +649,81 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
 
   async #driveFile(fileId: string): Promise<DriveFileMetadata & { trashed?: boolean }> {
     const file = await this.#json<DriveFileMetadata & { trashed?: boolean }>(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id%2Cname%2CmimeType%2Cparents%2CdriveId%2Ctrashed`
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id%2Cname%2CmimeType%2Cparents%2CdriveId%2CownedByMe%2Ctrashed`
     );
     return { ...file, parents: file.parents ?? [] };
+  }
+
+  async #rootFolder(): Promise<DriveFileMetadata> {
+    const root = await this.#driveFile('root');
+    if (
+      root.driveId ||
+      root.ownedByMe !== true ||
+      root.mimeType !== 'application/vnd.google-apps.folder'
+    ) {
+      throw new Error('Google Drive did not return the authenticated My Drive root');
+    }
+    return root;
+  }
+
+  async #ancestryReachesRoot(parentIds: readonly string[], rootId: string): Promise<boolean> {
+    const pending = [...parentIds];
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const parentId = pending.shift();
+      if (!parentId || visited.has(parentId)) {
+        continue;
+      }
+      if (parentId === rootId) {
+        return true;
+      }
+      visited.add(parentId);
+      const parent = await this.#driveFile(parentId);
+      if (
+        parent.driveId ||
+        parent.ownedByMe !== true ||
+        parent.mimeType !== 'application/vnd.google-apps.folder'
+      ) {
+        continue;
+      }
+      pending.push(...parent.parents);
+    }
+    return false;
+  }
+
+  async #ancestryReachesSelection(
+    parentIds: readonly string[],
+    selectedFolderIds: readonly string[],
+    rootId: string
+  ): Promise<boolean> {
+    const selected = new Set(selectedFolderIds);
+    const pending = parentIds.map((id) => ({ id, selectedReached: selected.has(id) }));
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const candidate = pending.shift();
+      if (!candidate) {
+        continue;
+      }
+      const visitKey = `${candidate.id}:${candidate.selectedReached}`;
+      if (visited.has(visitKey)) {
+        continue;
+      }
+      if (candidate.id === rootId) {
+        return candidate.selectedReached;
+      }
+      visited.add(visitKey);
+      const parent = await this.#driveFile(candidate.id);
+      if (
+        parent.driveId ||
+        parent.ownedByMe !== true ||
+        parent.mimeType !== 'application/vnd.google-apps.folder'
+      ) {
+        continue;
+      }
+      const selectedReached = candidate.selectedReached || selected.has(parent.id);
+      pending.push(...parent.parents.map((id) => ({ id, selectedReached })));
+    }
+    return false;
   }
 
   async readSpreadsheet(spreadsheetId: string): Promise<{
@@ -567,6 +735,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
       tables: IndexedTable[];
     }>;
   }> {
+    await this.authorizeSpreadsheet(spreadsheetId);
     const metadata = await this.#json<SpreadsheetMetadata>(
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(sheetId,title),tables(tableId,name,range,columnProperties))`
     );
@@ -596,6 +765,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
   }
 
   async getRevision(spreadsheetId: string): Promise<string> {
+    await this.authorizeSpreadsheet(spreadsheetId);
     const response = await this.#json<{ version?: string }>(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}?fields=version`
     );
@@ -620,6 +790,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway, ProposalGateway {
   }
 
   async apply(proposal: SheetChangeProposal): Promise<{ updatedRange: string; verified: boolean }> {
+    await this.authorizeSpreadsheet(proposal.spreadsheetId);
     const sheet = await this.#findSheet(proposal);
     const parsed = parseSheetValues(sheet.rawValues);
     const unknown = Object.keys(proposal.values).filter(

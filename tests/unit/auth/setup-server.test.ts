@@ -96,7 +96,7 @@ describe('OAuthSetupServer', () => {
     expect(location.searchParams.get('redirect_uri')).toBe(`${setupUrl}/oauth/callback`);
   });
 
-  it('offers re-consent when stored tokens are missing drive.file', async () => {
+  it('offers re-consent when stored tokens are missing full Drive access', async () => {
     const vault = new CredentialVault(new MemoryBackend());
     await vault.saveTokens({
       accessToken: 'access',
