@@ -11,6 +11,7 @@ export default defineConfig({
   clean: true,
   dts: false,
   platform: 'node',
+  removeNodeProtocol: false,
   splitting: false,
   external: [
     'googleapis',

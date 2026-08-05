@@ -22,6 +22,20 @@ The MCP server runs over stdio. Call `get_connection_status`, open its local set
 
 The Codex plugin manifest is `.codex-plugin/plugin.json`; `.mcp.json` launches `dist/index.js`. Build before loading this repository as a local plugin.
 
+### Install from the repo-local marketplace
+
+Build the plugin, add this repository as a local marketplace, and install its entry:
+
+```bash
+export GSHEETS_GOOGLE_CLIENT_ID="your-desktop-client-id.apps.googleusercontent.com"
+npm ci
+npm run build
+codex plugin marketplace add "$PWD"
+codex plugin add gsheets@gsheets-local
+```
+
+Start a new Codex task from an environment that exports `GSHEETS_GOOGLE_CLIENT_ID`. The optional `GSHEETS_DATA_DIR` variable overrides the operating-system data directory when an isolated test profile is useful. The bundled MCP configuration forwards both variables without storing their values in the repository.
+
 ## Security and behavior
 
 - OAuth scopes: identity, Drive metadata read-only, and Google Sheets.

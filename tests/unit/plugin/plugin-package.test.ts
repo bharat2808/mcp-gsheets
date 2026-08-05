@@ -20,13 +20,17 @@ describe('Codex plugin package', () => {
 
   it('launches the bundled server from the plugin root', () => {
     const config = JSON.parse(readFileSync(resolve(root, '.mcp.json'), 'utf8')) as {
-      mcpServers: Record<string, { command: string; args: string[]; cwd: string }>;
+      mcpServers: Record<
+        string,
+        { command: string; args: string[]; cwd: string; env_vars: string[] }
+      >;
     };
 
     expect(config.mcpServers.gsheets).toEqual({
       command: 'node',
       args: ['./dist/index.js'],
       cwd: '.',
+      env_vars: ['GSHEETS_GOOGLE_CLIENT_ID', 'GSHEETS_DATA_DIR'],
     });
   });
 });

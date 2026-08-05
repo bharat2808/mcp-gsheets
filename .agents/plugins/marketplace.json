@@ -1,0 +1,20 @@
+{
+  "name": "gsheets-local",
+  "interface": {
+    "displayName": "GSheets Local Development"
+  },
+  "plugins": [
+    {
+      "name": "gsheets",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

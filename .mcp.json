@@ -3,7 +3,8 @@
     "gsheets": {
       "command": "node",
       "args": ["./dist/index.js"],
-      "cwd": "."
+      "cwd": ".",
+      "env_vars": ["GSHEETS_GOOGLE_CLIENT_ID", "GSHEETS_DATA_DIR"]
     }
   }
 }
