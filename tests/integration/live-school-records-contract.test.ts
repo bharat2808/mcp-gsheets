@@ -57,10 +57,12 @@ describe('School Records live integration contract', () => {
     expect(second.marker).not.toBe(first.marker);
   });
 
-  it('recovers the unique owned recent workbook when creation applied but its response was lost', async () => {
+  it('recovers the unique owned recent workbook with the latest vault token after creation response loss', async () => {
     let requestedUrl = '';
-    const fetcher = vi.fn(async (input: string | URL | Request) => {
+    let authorization = '';
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       requestedUrl = String(input);
+      authorization = new Headers(init?.headers).get('authorization') ?? '';
       return new Response(
         JSON.stringify({
           files: [
@@ -86,10 +88,12 @@ describe('School Records live integration contract', () => {
         create: async () => {
           throw new Error('MCP response stream closed');
         },
-        accessToken: 'isolated-token',
+        loadAccessToken: async () => 'latest-vault-token',
+        refreshAccessToken: async () => {},
         fetcher,
       })
     ).resolves.toBe('recovered-sheet');
+    expect(authorization).toBe('Bearer latest-vault-token');
     expect(new URL(requestedUrl).searchParams.get('q')).toBe(
       "name = 'School Records [run-marker]' and 'me' in owners and trashed = false and createdTime >= '2026-08-06T12:00:00.000Z'"
     );
@@ -102,7 +106,8 @@ describe('School Records live integration contract', () => {
 
     const cleanup = trashWorkbook({
       spreadsheetId: 'expected-sheet',
-      accessToken: 'isolated-token',
+      loadAccessToken: async () => 'isolated-token',
+      refreshAccessToken: async () => {},
       fetcher,
     });
 
@@ -118,7 +123,8 @@ describe('School Records live integration contract', () => {
     await expect(
       trashWorkbook({
         spreadsheetId: 'expected-sheet',
-        accessToken: 'isolated-token',
+        loadAccessToken: async () => 'isolated-token',
+        refreshAccessToken: async () => {},
         fetcher,
       })
     ).rejects.toThrow('trashed=true');
@@ -130,7 +136,8 @@ describe('School Records live integration contract', () => {
     await expect(
       trashWorkbook({
         spreadsheetId: 'retained-sheet',
-        accessToken: 'isolated-token',
+        loadAccessToken: async () => 'isolated-token',
+        refreshAccessToken: async () => {},
         fetcher,
       })
     ).rejects.toThrow(/retained-sheet.*invalid response/iu);
@@ -171,9 +178,104 @@ describe('School Records live integration contract', () => {
         create: async () => {
           throw new Error('MCP response stream closed');
         },
-        accessToken: 'isolated-token',
+        loadAccessToken: async () => 'isolated-token',
+        refreshAccessToken: async () => {},
         fetcher,
       })
     ).rejects.toThrow(/candidate-a, candidate-b/u);
+  });
+
+  it('loads a rotated vault token immediately before workbook cleanup', async () => {
+    let vaultToken = 'token-at-creation';
+    const authorizations: string[] = [];
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get('authorization') ?? '');
+      return new Response(JSON.stringify({ id: 'rotated-sheet', trashed: true }));
+    }) as unknown as typeof fetch;
+    const spreadsheetId = await createDisposableWorkbook({
+      identity: {
+        marker: 'rotation-run',
+        title: 'School Records [rotation-run]',
+        createdAfter: '2026-08-06T12:00:00.000Z',
+      },
+      create: async () => ({ spreadsheetId: 'rotated-sheet' }),
+      loadAccessToken: async () => vaultToken,
+      refreshAccessToken: async () => {},
+    });
+
+    vaultToken = 'token-at-cleanup';
+
+    await trashWorkbook({
+      spreadsheetId,
+      loadAccessToken: async () => vaultToken,
+      refreshAccessToken: async () => {},
+      fetcher,
+    });
+    expect(authorizations).toEqual(['Bearer token-at-cleanup']);
+  });
+
+  it('refreshes through the gateway and retries one time when Drive returns 401', async () => {
+    let vaultToken = 'expired-token';
+    let refreshes = 0;
+    const authorizations: string[] = [];
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get('authorization') ?? '');
+      if (authorizations.length === 1) {
+        return new Response('', { status: 401 });
+      }
+      return new Response(JSON.stringify({ id: 'retry-sheet', trashed: true }));
+    }) as unknown as typeof fetch;
+
+    await trashWorkbook({
+      spreadsheetId: 'retry-sheet',
+      loadAccessToken: async () => vaultToken,
+      refreshAccessToken: async () => {
+        refreshes += 1;
+        vaultToken = 'refreshed-token';
+      },
+      fetcher,
+    });
+
+    expect(authorizations).toEqual(['Bearer expired-token', 'Bearer refreshed-token']);
+    expect(refreshes).toBe(1);
+  });
+
+  it('stops after a repeated 401 and reports the retained workbook id', async () => {
+    let refreshes = 0;
+    const fetcher = vi.fn(async () => new Response('', { status: 401 })) as unknown as typeof fetch;
+
+    await expect(
+      trashWorkbook({
+        spreadsheetId: 'retained-after-401',
+        loadAccessToken: async () => 'still-unauthorized',
+        refreshAccessToken: async () => {
+          refreshes += 1;
+        },
+        fetcher,
+      })
+    ).rejects.toThrow(/retained-after-401.*HTTP 401/iu);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(refreshes).toBe(1);
+  });
+
+  it('reports the unique workbook title when recovery remains unauthorized', async () => {
+    const fetcher = vi.fn(async () => new Response('', { status: 401 })) as unknown as typeof fetch;
+
+    await expect(
+      createDisposableWorkbook({
+        identity: {
+          marker: 'unauthorized-run',
+          title: 'School Records [unauthorized-run]',
+          createdAfter: '2026-08-06T12:00:00.000Z',
+        },
+        create: async () => {
+          throw new Error('MCP response stream closed');
+        },
+        loadAccessToken: async () => 'still-unauthorized',
+        refreshAccessToken: async () => {},
+        fetcher,
+      })
+    ).rejects.toThrow('School Records [unauthorized-run]');
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

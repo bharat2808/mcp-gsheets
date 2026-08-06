@@ -108,26 +108,70 @@ async function approve(client: Client, prepared: Awaited<ReturnType<typeof prepa
   return response;
 }
 
-export async function trashWorkbook(options: {
-  spreadsheetId: string;
-  accessToken: string;
-  fetcher?: typeof fetch;
-}): Promise<void> {
-  const response = await (options.fetcher ?? fetch)(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(options.spreadsheetId)}?fields=id%2Ctrashed`,
-    {
-      method: 'PATCH',
-      headers: {
-        authorization: `Bearer ${options.accessToken}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ trashed: true }),
+interface DriveAuthorizationOptions {
+  loadAccessToken: () => Promise<string>;
+  refreshAccessToken: () => Promise<void>;
+}
+
+async function loadCurrentAccessToken(
+  options: DriveAuthorizationOptions,
+  failureContext: string
+): Promise<string> {
+  try {
+    const accessToken = (await options.loadAccessToken()).trim();
+    if (!accessToken) {
+      throw new Error('the credential vault returned an empty access token');
     }
+    return accessToken;
+  } catch (error) {
+    throw new Error(`${failureContext}; could not load the current vault token: ${String(error)}`);
+  }
+}
+
+async function requestDriveWithOneRefresh(
+  options: DriveAuthorizationOptions,
+  request: (accessToken: string) => Promise<Response>,
+  failureContext: string
+): Promise<Response> {
+  let response = await request(await loadCurrentAccessToken(options, failureContext));
+  if (response.status !== 401) {
+    return response;
+  }
+  try {
+    await options.refreshAccessToken();
+  } catch (error) {
+    throw new Error(
+      `${failureContext}; gateway token refresh failed after HTTP 401: ${String(error)}`
+    );
+  }
+  response = await request(await loadCurrentAccessToken(options, failureContext));
+  return response;
+}
+
+export async function trashWorkbook(
+  options: {
+    spreadsheetId: string;
+    fetcher?: typeof fetch;
+  } & DriveAuthorizationOptions
+): Promise<void> {
+  const failureContext = `Disposable workbook ${options.spreadsheetId} cleanup failed; retained workbook ID: ${options.spreadsheetId}`;
+  const fetcher = options.fetcher ?? fetch;
+  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(options.spreadsheetId)}?fields=id%2Ctrashed`;
+  const response = await requestDriveWithOneRefresh(
+    options,
+    (accessToken) =>
+      fetcher(url, {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ trashed: true }),
+      }),
+    failureContext
   );
   if (!response.ok) {
-    throw new Error(
-      `Disposable workbook ${options.spreadsheetId} cleanup failed with HTTP ${response.status}`
-    );
+    throw new Error(`${failureContext}; Drive returned HTTP ${response.status}`);
   }
   let confirmation: { id?: unknown; trashed?: unknown };
   try {
@@ -148,12 +192,13 @@ function escapedDriveString(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
 }
 
-async function findDisposableWorkbook(options: {
-  identity: SchoolRecordsRunIdentity;
-  accessToken: string;
-  fetcher: typeof fetch;
-  createError: unknown;
-}): Promise<string> {
+async function findDisposableWorkbook(
+  options: {
+    identity: SchoolRecordsRunIdentity;
+    fetcher: typeof fetch;
+    createError: unknown;
+  } & DriveAuthorizationOptions
+): Promise<string> {
   const url = new URL('https://www.googleapis.com/drive/v3/files');
   url.searchParams.set(
     'q',
@@ -161,12 +206,18 @@ async function findDisposableWorkbook(options: {
   );
   url.searchParams.set('fields', 'files(id,name,createdTime,trashed,ownedByMe)');
   url.searchParams.set('pageSize', '10');
-  const response = await options.fetcher(url, {
-    headers: { authorization: `Bearer ${options.accessToken}` },
-  });
+  const failureContext = `Creation response was lost for ${options.identity.title}`;
+  const response = await requestDriveWithOneRefresh(
+    options,
+    (accessToken) =>
+      options.fetcher(url, {
+        headers: { authorization: `Bearer ${accessToken}` },
+      }),
+    failureContext
+  );
   if (!response.ok) {
     throw new Error(
-      `Creation response was lost and recovery lookup failed with HTTP ${response.status}; original error: ${String(options.createError)}`
+      `Creation response was lost for ${options.identity.title} and recovery lookup failed with HTTP ${response.status}; original error: ${String(options.createError)}`
     );
   }
   const body = (await response.json()) as {
@@ -209,12 +260,13 @@ async function findDisposableWorkbook(options: {
   );
 }
 
-export async function createDisposableWorkbook(options: {
-  identity: SchoolRecordsRunIdentity;
-  create: () => Promise<unknown>;
-  accessToken: string;
-  fetcher?: typeof fetch;
-}): Promise<string> {
+export async function createDisposableWorkbook(
+  options: {
+    identity: SchoolRecordsRunIdentity;
+    create: () => Promise<unknown>;
+    fetcher?: typeof fetch;
+  } & DriveAuthorizationOptions
+): Promise<string> {
   try {
     const created = (await options.create()) as { spreadsheetId?: unknown };
     if (typeof created.spreadsheetId !== 'string' || !created.spreadsheetId) {
@@ -224,7 +276,8 @@ export async function createDisposableWorkbook(options: {
   } catch (createError) {
     return findDisposableWorkbook({
       identity: options.identity,
-      accessToken: options.accessToken,
+      loadAccessToken: options.loadAccessToken,
+      refreshAccessToken: options.refreshAccessToken,
       fetcher: options.fetcher ?? fetch,
       createError,
     });
@@ -249,22 +302,27 @@ export async function runLiveSchoolRecords(
     stderr: 'pipe',
   });
   const client = new Client({ name: 'school-records-live-acceptance', version: '0.2.0' });
+  const vault = new CredentialVault(new KeyringBackend());
   const identity = createSchoolRecordsRunIdentity();
   let spreadsheetId = '';
-  let accessToken = '';
+  const loadAccessToken = async () => {
+    const tokens = await vault.loadTokens();
+    if (!tokens) {
+      throw new Error('OAuth tokens disappeared before a disposable workbook Drive request');
+    }
+    return tokens.accessToken;
+  };
+  const refreshAccessToken = async () => {
+    await invoke(client, 'refresh_index', {});
+  };
   try {
     await client.connect(transport);
     const status = json(await invoke(client, 'get_connection_status', {}));
     assert.equal(status.connected, true, `Connect the isolated profile first: ${status.setupUrl}`);
-    const tokens = await new CredentialVault(new KeyringBackend()).loadTokens();
-    if (!tokens) {
-      throw new Error('OAuth tokens disappeared before disposable workbook creation');
-    }
-    accessToken = tokens.accessToken;
-
     spreadsheetId = await createDisposableWorkbook({
       identity,
-      accessToken,
+      loadAccessToken,
+      refreshAccessToken,
       create: async () =>
         json(
           await invoke(client, 'create_spreadsheet', {
@@ -393,7 +451,7 @@ export async function runLiveSchoolRecords(
     await invoke(client, 'refresh_index', {});
     const changes = json(await invoke(client, 'get_recent_changes', { limit: 100 }));
     assert.ok(changes.approvedWrites.length > 0);
-    await trashWorkbook({ spreadsheetId, accessToken });
+    await trashWorkbook({ spreadsheetId, loadAccessToken, refreshAccessToken });
     spreadsheetId = '';
     await approve(client, await prepare(client, 'sign_out', { revokeGoogleGrant: false }));
     console.log(
@@ -401,17 +459,12 @@ export async function runLiveSchoolRecords(
     );
   } finally {
     try {
-      await client.close();
-    } finally {
       if (spreadsheetId) {
-        if (!accessToken) {
-          throw new Error(
-            `Disposable workbook cleanup could not run; retained workbook ID: ${spreadsheetId}`
-          );
-        }
-        await trashWorkbook({ spreadsheetId, accessToken });
+        await trashWorkbook({ spreadsheetId, loadAccessToken, refreshAccessToken });
         spreadsheetId = '';
       }
+    } finally {
+      await client.close();
     }
   }
 }
