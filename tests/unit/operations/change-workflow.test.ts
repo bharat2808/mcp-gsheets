@@ -45,6 +45,12 @@ function fixture(options: { empty?: boolean; verify?: boolean; refreshError?: Er
   return { gateway, auditStore, refresh };
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  while (!predicate()) {
+    await Promise.resolve();
+  }
+}
+
 describe('ChangeWorkflow', () => {
   const input = {
     operation: 'update_values',
@@ -282,5 +288,283 @@ describe('ChangeWorkflow', () => {
     });
     await expect(workflow.approve(prepared.proposal.id, nonce)).rejects.toThrow(/applied/u);
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('serializes direct inspection through application so a second empty-range write sees the first', async () => {
+    let currentValue: string | null = null;
+    const observedBefore: Array<string | null> = [];
+    let activeApplications = 0;
+    let maximumActiveApplications = 0;
+    let releaseFirst!: () => void;
+    const firstBarrier = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const dependencies = fixture({ empty: true });
+    dependencies.gateway.inspect.mockImplementation(async (_operation, arguments_) => {
+      observedBefore.push(currentValue);
+      return {
+        affectedResources: [
+          { kind: 'spreadsheet' as const, id: 'book', label: 'book' },
+          { kind: 'range' as const, id: 'book:Plan!A2', label: 'Plan!A2' },
+        ],
+        preview: {
+          kind: 'values' as const,
+          before: currentValue === null ? [] : [[currentValue]],
+          after: arguments_.values,
+        },
+        riskInspection: { targetCellsVerifiedEmpty: currentValue === null },
+        driveRevisions: { book: '7' },
+        state: { value: currentValue },
+      };
+    });
+    const firstExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      await firstBarrier;
+      currentValue = 'first';
+      activeApplications -= 1;
+      return { updatedRange: 'Plan!A2' };
+    });
+    const secondExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      currentValue = 'second';
+      activeApplications -= 1;
+      return { updatedRange: 'Plan!A2' };
+    });
+    const workflow = new ChangeWorkflow(dependencies);
+
+    const first = workflow.execute({
+      ...input,
+      arguments: { ...input.arguments, values: [['first']] },
+      execute: firstExecute,
+    });
+    await waitUntil(() => firstExecute.mock.calls.length === 1);
+    const second = workflow.execute({
+      ...input,
+      arguments: { ...input.arguments, values: [['second']] },
+      execute: secondExecute,
+    });
+    await Promise.resolve();
+    releaseFirst();
+    const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+
+    expect(firstOutcome.kind).toBe('direct');
+    expect(secondOutcome.kind).toBe('proposal');
+    expect(observedBefore).toEqual([null, 'first']);
+    expect(maximumActiveApplications).toBe(1);
+    expect(secondExecute).not.toHaveBeenCalled();
+  });
+
+  it('keeps a direct mutation out of an overlapping approved application', async () => {
+    const events: string[] = [];
+    let activeApplications = 0;
+    let maximumActiveApplications = 0;
+    let releaseApproved!: () => void;
+    const approvedBarrier = new Promise<void>((resolve) => {
+      releaseApproved = resolve;
+    });
+    const dependencies = fixture();
+    dependencies.gateway.inspect.mockImplementation(async (_operation, arguments_) => {
+      const direct = arguments_.range === 'Plan!B2';
+      if (direct) {
+        events.push('direct-preflight');
+      }
+      return {
+        affectedResources: [
+          { kind: 'spreadsheet' as const, id: 'book', label: 'book' },
+          {
+            kind: 'range' as const,
+            id: `book:${String(arguments_.range)}`,
+            label: String(arguments_.range),
+          },
+        ],
+        preview: {
+          kind: 'values' as const,
+          before: direct ? [] : [['old']],
+          after: arguments_.values,
+        },
+        riskInspection: { targetCellsVerifiedEmpty: direct },
+        driveRevisions: { book: '7' },
+        state: { range: arguments_.range, before: direct ? null : 'old' },
+      };
+    });
+    dependencies.gateway.captureState.mockImplementation(async (proposal) =>
+      structuredClone(proposal.preflightState)
+    );
+    const approvedExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      await approvedBarrier;
+      events.push('approved-applied');
+      activeApplications -= 1;
+      return { updatedRange: 'Plan!A2' };
+    });
+    const directExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      events.push('direct-applied');
+      activeApplications -= 1;
+      return { updatedRange: 'Plan!B2' };
+    });
+    const workflow = new ChangeWorkflow(dependencies);
+    const prepared = await workflow.execute({ ...input, execute: approvedExecute });
+    if (prepared.kind !== 'proposal') throw new Error('expected proposal');
+
+    const approved = workflow.approve(
+      prepared.proposal.id,
+      workflow.confirmationToken(prepared.proposal.id)
+    );
+    await waitUntil(() => approvedExecute.mock.calls.length === 1);
+    const direct = workflow.execute({
+      ...input,
+      arguments: { ...input.arguments, range: 'Plan!B2' },
+      execute: directExecute,
+    });
+    await Promise.resolve();
+    releaseApproved();
+    await Promise.all([approved, direct]);
+
+    expect(maximumActiveApplications).toBe(1);
+    expect(events).toEqual(['approved-applied', 'direct-preflight', 'direct-applied']);
+  });
+
+  it('keeps direct spreadsheet mutation out of an approved sign-out application', async () => {
+    const events: string[] = [];
+    let activeApplications = 0;
+    let maximumActiveApplications = 0;
+    let releaseSignOut!: () => void;
+    const signOutBarrier = new Promise<void>((resolve) => {
+      releaseSignOut = resolve;
+    });
+    const dependencies = fixture({ empty: true });
+    dependencies.gateway.captureState.mockImplementation(async (proposal) =>
+      structuredClone(proposal.preflightState)
+    );
+    const signOutExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      await signOutBarrier;
+      events.push('sign-out-applied');
+      activeApplications -= 1;
+      return { signedOut: true };
+    });
+    const directExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      events.push('direct-applied');
+      activeApplications -= 1;
+      return { updatedRange: 'Plan!A2' };
+    });
+    dependencies.gateway.inspect.mockImplementation(async (operation) => {
+      if (operation !== 'sign_out') {
+        events.push('direct-preflight');
+      }
+      return operation === 'sign_out'
+        ? {
+            affectedResources: [
+              { kind: 'account' as const, id: 'google', label: 'Connected Google account' },
+            ],
+            preview: {
+              kind: 'exact' as const,
+              before: { connected: true },
+              after: { connected: false },
+            },
+            riskInspection: {},
+            driveRevisions: {},
+            state: { connected: true },
+          }
+        : {
+            affectedResources: [
+              { kind: 'spreadsheet' as const, id: 'book', label: 'book' },
+              { kind: 'range' as const, id: 'book:Plan!A2', label: 'Plan!A2' },
+            ],
+            preview: { kind: 'values' as const, before: [], after: [['new']] },
+            riskInspection: { targetCellsVerifiedEmpty: true },
+            driveRevisions: { book: '7' },
+            state: { value: null },
+          };
+    });
+    dependencies.gateway.getRevisions.mockImplementation(async (proposal) =>
+      proposal.operation === 'sign_out' ? {} : { book: '7' }
+    );
+    const workflow = new ChangeWorkflow(dependencies);
+    const prepared = await workflow.execute({
+      operation: 'sign_out',
+      arguments: {},
+      execute: signOutExecute,
+      refresh: false,
+      persistOutcome: false,
+    });
+    if (prepared.kind !== 'proposal') throw new Error('expected proposal');
+
+    const signOut = workflow.approve(
+      prepared.proposal.id,
+      workflow.confirmationToken(prepared.proposal.id)
+    );
+    await waitUntil(() => signOutExecute.mock.calls.length === 1);
+    const direct = workflow.execute({ ...input, execute: directExecute });
+    await Promise.resolve();
+    releaseSignOut();
+    await Promise.all([signOut, direct]);
+
+    expect(maximumActiveApplications).toBe(1);
+    expect(events).toEqual(['sign-out-applied', 'direct-preflight', 'direct-applied']);
+  });
+
+  it('keeps an approved spreadsheet mutation out of an approved sign-out application', async () => {
+    let activeApplications = 0;
+    let maximumActiveApplications = 0;
+    let releaseSignOut!: () => void;
+    const signOutBarrier = new Promise<void>((resolve) => {
+      releaseSignOut = resolve;
+    });
+    const dependencies = fixture();
+    dependencies.gateway.captureState.mockImplementation(async (proposal) =>
+      structuredClone(proposal.preflightState)
+    );
+    dependencies.gateway.getRevisions.mockImplementation(async (proposal) =>
+      proposal.operation === 'sign_out' ? {} : { book: '7' }
+    );
+    const signOutExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      await signOutBarrier;
+      activeApplications -= 1;
+      return { signedOut: true };
+    });
+    const spreadsheetExecute = vi.fn(async () => {
+      activeApplications += 1;
+      maximumActiveApplications = Math.max(maximumActiveApplications, activeApplications);
+      activeApplications -= 1;
+      return { updatedRange: 'Plan!A2' };
+    });
+    const workflow = new ChangeWorkflow(dependencies);
+    const signOutProposal = await workflow.execute({
+      operation: 'sign_out',
+      arguments: {},
+      execute: signOutExecute,
+      refresh: false,
+      persistOutcome: false,
+    });
+    const spreadsheetProposal = await workflow.execute({ ...input, execute: spreadsheetExecute });
+    if (signOutProposal.kind !== 'proposal' || spreadsheetProposal.kind !== 'proposal') {
+      throw new Error('expected proposals');
+    }
+
+    const signOut = workflow.approve(
+      signOutProposal.proposal.id,
+      workflow.confirmationToken(signOutProposal.proposal.id)
+    );
+    await waitUntil(() => signOutExecute.mock.calls.length === 1);
+    const spreadsheet = workflow.approve(
+      spreadsheetProposal.proposal.id,
+      workflow.confirmationToken(spreadsheetProposal.proposal.id)
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseSignOut();
+    await Promise.all([signOut, spreadsheet]);
+
+    expect(maximumActiveApplications).toBe(1);
   });
 });

@@ -118,54 +118,56 @@ export class ChangeWorkflow {
   }
 
   async execute(input: ExecuteChangeInput): Promise<ChangeWorkflowOutcome> {
-    const preflight =
-      input.preflight ?? (await this.#gateway.inspect(input.operation, input.arguments));
-    const ids = resourceIds(preflight.affectedResources);
-    if (
-      isDestructiveOperation(input.operation) &&
-      this.#hasPendingVerification(input.operation, ids)
-    ) {
-      throw new Error(
-        'A dependent destructive change is blocked while an earlier application has pending verification'
-      );
-    }
-    const classification = classifyOperationRisk({
-      operation: input.operation,
-      arguments: input.arguments,
-      inspection: preflight.riskInspection,
-    });
-    if (classification.decision === 'reviewed') {
-      const proposal = this.#proposals.prepare({
+    return this.#withMutationLock(async () => {
+      const preflight =
+        input.preflight ?? (await this.#gateway.inspect(input.operation, input.arguments));
+      const ids = resourceIds(preflight.affectedResources);
+      if (
+        isDestructiveOperation(input.operation) &&
+        this.#hasPendingVerification(input.operation, ids)
+      ) {
+        throw new Error(
+          'A dependent destructive change is blocked while an earlier application has pending verification'
+        );
+      }
+      const classification = classifyOperationRisk({
         operation: input.operation,
         arguments: input.arguments,
-        affectedResources: preflight.affectedResources,
-        preview: preflight.preview,
-        riskReasons: classification.reasons,
-        driveRevisions: preflight.driveRevisions,
-        editable: preflight.preview.kind === 'values',
-        preflightState: preflight.state,
+        inspection: preflight.riskInspection,
       });
-      this.#executors.set(proposal.id, {
-        execute: input.execute,
-        refresh: input.refresh !== false,
-        persistOutcome: input.persistOutcome !== false,
-        preflight,
-      });
-      return { kind: 'proposal', proposal };
-    }
+      if (classification.decision === 'reviewed') {
+        const proposal = this.#proposals.prepare({
+          operation: input.operation,
+          arguments: input.arguments,
+          affectedResources: preflight.affectedResources,
+          preview: preflight.preview,
+          riskReasons: classification.reasons,
+          driveRevisions: preflight.driveRevisions,
+          editable: preflight.preview.kind === 'values',
+          preflightState: preflight.state,
+        });
+        this.#executors.set(proposal.id, {
+          execute: input.execute,
+          refresh: input.refresh !== false,
+          persistOutcome: input.persistOutcome !== false,
+          preflight,
+        });
+        return { kind: 'proposal', proposal };
+      }
 
-    const application = await this.#applyAndVerify(
-      input.operation,
-      input.arguments,
-      preflight,
-      input.execute,
-      input.refresh !== false,
-      'direct',
-      undefined,
-      undefined,
-      input.persistOutcome !== false
-    );
-    return { kind: 'direct', ...application };
+      const application = await this.#applyAndVerify(
+        input.operation,
+        input.arguments,
+        preflight,
+        input.execute,
+        input.refresh !== false,
+        'direct',
+        undefined,
+        undefined,
+        input.persistOutcome !== false
+      );
+      return { kind: 'direct', ...application };
+    });
   }
 
   review(id: string): ChangeProposal {
@@ -186,20 +188,22 @@ export class ChangeWorkflow {
   }
 
   async approve(id: string, nonce: string): Promise<ChangeProposal> {
-    const initial = this.#proposals.review(id);
-    const ids = resourceIds(initial.affectedResources);
-    return this.#withResourceLocks(ids, async () => {
-      const proposal = this.#proposals.review(id);
-      if (
-        isDestructiveOperation(proposal.operation) &&
-        this.#hasPendingVerification(proposal.operation, ids)
-      ) {
-        throw new Error(
-          'A dependent destructive change is blocked while an earlier application has pending verification'
-        );
-      }
-      this.#proposals.recordVisualConfirmation(id, nonce);
-      return this.#proposals.approve(id);
+    return this.#withMutationLock(async () => {
+      const initial = this.#proposals.review(id);
+      const ids = resourceIds(initial.affectedResources);
+      return this.#withResourceLocks(ids, async () => {
+        const proposal = this.#proposals.review(id);
+        if (
+          isDestructiveOperation(proposal.operation) &&
+          this.#hasPendingVerification(proposal.operation, ids)
+        ) {
+          throw new Error(
+            'A dependent destructive change is blocked while an earlier application has pending verification'
+          );
+        }
+        this.#proposals.recordVisualConfirmation(id, nonce);
+        return this.#proposals.approve(id);
+      });
     });
   }
 
@@ -387,6 +391,10 @@ export class ChangeWorkflow {
     } catch {
       return true;
     }
+  }
+
+  #withMutationLock<T>(action: () => Promise<T>): Promise<T> {
+    return this.#withResourceLocks(['mutation:*'], action);
   }
 
   async #withResourceLocks<T>(keys: readonly string[], action: () => Promise<T>): Promise<T> {
