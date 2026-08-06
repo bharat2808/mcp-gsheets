@@ -20,7 +20,7 @@ const inputSchema = z.object({
 });
 
 export const getFullSheetSnapshotTool: Tool = {
-  name: 'sheets_get_full_sheet_snapshot',
+  name: 'get_full_sheet_snapshot',
   description:
     'One-shot tool: reads all structural and formatting metadata for a sheet in a single API call. ' +
     'Returns: sheet properties (frozen rows/cols, dimensions, tab color), ' +

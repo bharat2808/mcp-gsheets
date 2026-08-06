@@ -6,7 +6,7 @@ import { formatToolResponse } from '../utils/formatters.js';
 import { extractSheetName, getSheetId } from '../utils/range-helpers.js';
 
 export const deleteRowsTool: Tool = {
-  name: 'sheets_delete_rows',
+  name: 'delete_rows',
   description: 'Delete one or more rows from a Google Sheet using a full-row A1 range',
   inputSchema: {
     type: 'object',

@@ -31,7 +31,7 @@ const addTableInputSchema = z.object({
 });
 
 export const addTableTool: Tool = {
-  name: 'sheets_add_table',
+  name: 'add_table',
   description:
     'Create a native Google Sheets table with typed columns and optional dropdown values',
   inputSchema: {

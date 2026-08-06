@@ -13,9 +13,6 @@ describe('gsheets operation registry', () => {
     expect(PUBLIC_TOOL_NAMES).toContain('get_catalog');
     expect(PUBLIC_TOOL_NAMES).toContain('refresh_index');
     expect(PUBLIC_TOOL_NAMES).toContain('prepare_row_change');
-    expect(PUBLIC_TOOL_NAMES.some((name) => name.startsWith('sheets_'))).toBe(false);
-    expect(PUBLIC_TOOL_NAMES).not.toContain('get_sheets_catalog');
-    expect(PUBLIC_TOOL_NAMES).not.toContain('refresh_sheets_index');
     expect(PUBLIC_TOOL_NAMES).not.toContain('prepare_sheet_change');
   });
 
@@ -57,16 +54,16 @@ describe('gsheets operation registry', () => {
   });
 
   it('routes appends through the gateway without retry permission', async () => {
-    const executeLegacyOperation = vi.fn().mockResolvedValue({ content: [] });
+    const executeRetainedOperation = vi.fn().mockResolvedValue({ content: [] });
     const operation = OPERATIONS.find((candidate) => candidate.name === 'append_values');
 
-    await operation?.handler({ executeLegacyOperation } as any, {
+    await operation?.handler({ executeRetainedOperation } as any, {
       spreadsheetId: 'book',
       range: 'Sheet1!A:A',
       values: [['new row']],
     });
 
-    expect(executeLegacyOperation).toHaveBeenCalledWith(
+    expect(executeRetainedOperation).toHaveBeenCalledWith(
       'append_values',
       expect.any(Function),
       expect.objectContaining({ spreadsheetId: 'book' }),

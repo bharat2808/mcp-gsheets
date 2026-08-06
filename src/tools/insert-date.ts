@@ -17,7 +17,7 @@ const insertDateInputSchema = z.object({
 export type InsertDateInput = z.infer<typeof insertDateInputSchema>;
 
 export const insertDateTool: Tool = {
-  name: 'sheets_insert_date',
+  name: 'insert_date',
   description:
     'Insert properly formatted dates in Google Sheets with locale support and automatic detection',
   inputSchema: {

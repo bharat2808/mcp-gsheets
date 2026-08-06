@@ -1,8 +1,8 @@
 {
   "name": "gsheets-local-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "mcpName": "io.github.bharat2808/gsheets-local-plugin",
-  "description": "Local Codex plugin for searching and safely updating selected Google Sheets",
+  "description": "Local Codex plugin for safely finding and changing Google Sheets in selected owned My Drive folders",
   "author": "bharat2808",
   "license": "MIT",
   "type": "module",
@@ -30,7 +30,10 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest watch",
     "test:ui": "vitest --ui",
-    "smoke:built": "node scripts/smoke-built-mcp.mjs"
+    "smoke:built": "node scripts/smoke-built-mcp.mjs",
+    "setup": "node scripts/setup-mcp-config.js",
+    "integration:dry": "tsx scripts/live-school-records.ts",
+    "integration:live": "tsx scripts/live-school-records.ts"
   },
   "keywords": [
     "mcp",

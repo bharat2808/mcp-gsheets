@@ -5,7 +5,7 @@ import { validateBatchGetValuesInput } from '../utils/validators.js';
 import { formatBatchValuesResponse } from '../utils/formatters.js';
 
 export const batchGetValuesTool: Tool = {
-  name: 'sheets_batch_get_values',
+  name: 'batch_get_values',
   description: 'Get values from multiple ranges in a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',

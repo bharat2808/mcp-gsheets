@@ -71,6 +71,71 @@ afterEach(async () => {
 });
 
 describe('GSheetsRuntime OAuth credential bootstrap', () => {
+  it('removes persisted folder selections that are not owned and root-reachable before refresh', async () => {
+    const { runtime, directory, vault, getSetupOptions } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    const key = await vault.getOrCreateDataKey();
+    const index = new LocalIndex(join(directory, 'index.sqlite'), key);
+    index.initialize();
+    index.setSelectedFolderIds(['owned-folder', 'shared-with-me']);
+    index.close();
+    vi.stubGlobal('fetch', async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.includes('/about')) {
+        return new Response(JSON.stringify({ user: { permissionId: 'account-1' } }));
+      }
+      if (url.includes('/files/root')) {
+        return new Response(
+          JSON.stringify({
+            id: 'root-id',
+            name: 'My Drive',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [],
+            ownedByMe: true,
+          })
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          files: [
+            {
+              id: 'owned-folder',
+              name: 'Owned',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['root-id'],
+              ownedByMe: true,
+            },
+            {
+              id: 'shared-with-me',
+              name: 'Shared',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['root-id'],
+              ownedByMe: false,
+            },
+          ],
+        })
+      );
+    });
+
+    await runtime.initialize();
+
+    expect(getSetupOptions()?.getSelectedFolderIds()).toEqual(['owned-folder']);
+    expect(runtime.status().selectedFolderCount).toBe(1);
+    await runtime.close();
+  });
+
   it('keeps the prior token and catalog when re-consent omits full Drive scope', async () => {
     const { runtime, directory, vault, getSetupOptions } = await createRuntime();
     await writeFile(
@@ -184,11 +249,40 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     index.initialize();
     index.setSelectedFolderIds(['folder-1']);
     index.close();
-    const fetcher = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ user: { permissionId: 'account-1' } }), { status: 200 })
+    const fetcher = vi.fn(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.includes('/about')) {
+        return new Response(JSON.stringify({ user: { permissionId: 'account-1' } }), {
+          status: 200,
+        });
+      }
+      if (url.includes('/files/root')) {
+        return new Response(
+          JSON.stringify({
+            id: 'root-id',
+            name: 'My Drive',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          files: [
+            {
+              id: 'folder-1',
+              name: 'Folder',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['root-id'],
+              ownedByMe: true,
+            },
+          ],
+        }),
+        { status: 200 }
       );
+    });
     vi.stubGlobal('fetch', fetcher);
     const refresh = vi.spyOn(runtime, 'refresh').mockResolvedValue({} as any);
     await runtime.initialize();
@@ -612,24 +706,52 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     });
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(JSON.stringify({ user: { permissionId: 'account-1' }, files: [] }), {
-            status: 200,
-          })
-        )
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ user: { permissionId: 'account-1' }, files: [] }), {
+          status: 200,
+        })
+      )
     );
     await runtime.initialize();
     const key = await vault.getOrCreateDataKey();
     const index = new LocalIndex(join(directory, 'index.sqlite'), key);
     index.initialize();
+    index.setSelectedFolderIds(['school-folder']);
+    index.upsertSpreadsheet({
+      id: 'school-records',
+      name: 'School Records',
+      path: '/School/School Records',
+      modifiedTime: '2026-08-05T00:00:00.000Z',
+      version: '1',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:01:00.000Z',
+    });
     index.recordWriteAudit({
       appliedAt: '2026-08-05T00:02:00.000Z',
       operation: 'update_values',
     });
 
-    const proposal = (await runtime.prepareSignOut()) as { id: string };
+    const proposal = (await runtime.prepareSignOut()) as {
+      id: string;
+      preview: { kind: string; before: unknown; after: unknown };
+    };
+    expect(proposal.preview).toEqual({
+      kind: 'exact',
+      before: {
+        connection: 'connected',
+        selectedFolderCount: 1,
+        indexedSpreadsheetCount: 1,
+        approvedWriteCount: 1,
+        googleGrant: 'retained',
+      },
+      after: {
+        connection: 'signed_out',
+        selectedFolderCount: 0,
+        indexedSpreadsheetCount: 0,
+        approvedWriteCount: 0,
+        googleGrant: 'retained',
+      },
+    });
     const confirmationToken = runtime.confirmationToken(proposal.id);
     await expect(runtime.approve(proposal.id, confirmationToken)).resolves.toMatchObject({
       status: 'applied',

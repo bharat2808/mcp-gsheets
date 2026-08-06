@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { GSheetsRuntime } from '../runtime/gsheets-runtime.js';
 import { ChangeProposal, publicChangeProposal } from '../proposals/proposal-manager.js';
-import * as legacyTools from '../tools/index.js';
+import * as retainedTools from '../tools/index.js';
 
 export const TOOL_CATEGORIES = [
   'core',
@@ -71,10 +71,6 @@ function proposalResult(runtime: GSheetsRuntime, proposal: ChangeProposal, inclu
 
 function operationResult(runtime: GSheetsRuntime, value: unknown) {
   return isChangeProposal(value) ? proposalResult(runtime, value) : result(value);
-}
-
-function normalizedName(name: string): string {
-  return name.startsWith('sheets_') ? name.slice('sheets_'.length) : name;
 }
 
 function isZodSchema(value: unknown): value is z.ZodTypeAny {
@@ -151,7 +147,7 @@ function annotations(options: {
   return value;
 }
 
-function legacyOperation(
+function retainedOperation(
   category: ToolCategory,
   tool: Tool,
   handler: (input: any) => unknown,
@@ -162,7 +158,7 @@ function legacyOperation(
     required?: string[];
   };
   return {
-    name: normalizedName(tool.name),
+    name: tool.name,
     title: tool.name,
     description: tool.description ?? tool.name,
     category,
@@ -174,15 +170,10 @@ function legacyOperation(
       idempotent: options.idempotent,
     }),
     handler: async (runtime, input) => {
-      const output = await runtime.executeLegacyOperation(
-        normalizedName(tool.name),
-        handler,
-        input,
-        {
-          idempotent: options.idempotent === true,
-          refreshIndex: options.readOnly !== true,
-        }
-      );
+      const output = await runtime.executeRetainedOperation(tool.name, handler, input, {
+        idempotent: options.idempotent === true,
+        refreshIndex: options.readOnly !== true,
+      });
       return isChangeProposal(output) ? proposalResult(runtime, output) : output;
     },
   };
@@ -369,51 +360,61 @@ export const OPERATIONS: readonly OperationDefinition[] = [
     handler: (runtime, { proposalId }) => result(publicChangeProposal(runtime.cancel(proposalId))),
   },
 
-  legacyOperation('core', legacyTools.checkAccessTool, legacyTools.handleCheckAccess, {
+  retainedOperation('core', retainedTools.checkAccessTool, retainedTools.handleCheckAccess, {
     readOnly: true,
     idempotent: true,
   }),
-  legacyOperation('core', legacyTools.getMetadataTool, legacyTools.handleGetMetadata, {
+  retainedOperation('core', retainedTools.getMetadataTool, retainedTools.handleGetMetadata, {
     readOnly: true,
     idempotent: true,
   }),
-  legacyOperation('core', legacyTools.getSheetStructureTool, legacyTools.handleGetSheetStructure, {
-    readOnly: true,
-    idempotent: true,
-  }),
-  legacyOperation(
+  retainedOperation(
     'core',
-    legacyTools.getSheetDimensionsTool,
-    legacyTools.handleGetSheetDimensions,
+    retainedTools.getSheetStructureTool,
+    retainedTools.handleGetSheetStructure,
     {
       readOnly: true,
       idempotent: true,
     }
   ),
-  legacyOperation('core', legacyTools.getValuesTool, legacyTools.handleGetValues, {
+  retainedOperation(
+    'core',
+    retainedTools.getSheetDimensionsTool,
+    retainedTools.handleGetSheetDimensions,
+    {
+      readOnly: true,
+      idempotent: true,
+    }
+  ),
+  retainedOperation('core', retainedTools.getValuesTool, retainedTools.handleGetValues, {
     readOnly: true,
     idempotent: true,
   }),
-  legacyOperation('core', legacyTools.batchGetValuesTool, legacyTools.handleBatchGetValues, {
+  retainedOperation('core', retainedTools.batchGetValuesTool, retainedTools.handleBatchGetValues, {
     readOnly: true,
     idempotent: true,
   }),
-  legacyOperation('core', legacyTools.updateValuesTool, legacyTools.handleUpdateValues, {
+  retainedOperation('core', retainedTools.updateValuesTool, retainedTools.handleUpdateValues, {
     destructive: false,
     idempotent: true,
   }),
-  legacyOperation('core', legacyTools.batchUpdateValuesTool, legacyTools.handleBatchUpdateValues, {
+  retainedOperation(
+    'core',
+    retainedTools.batchUpdateValuesTool,
+    retainedTools.handleBatchUpdateValues,
+    {
+      destructive: false,
+      idempotent: true,
+    }
+  ),
+  retainedOperation('core', retainedTools.appendValuesTool, retainedTools.handleAppendValues, {
     destructive: false,
-    idempotent: true,
   }),
-  legacyOperation('core', legacyTools.appendValuesTool, legacyTools.handleAppendValues, {
-    destructive: false,
-  }),
-  legacyOperation('core', legacyTools.clearValuesTool, legacyTools.handleClearValues),
+  retainedOperation('core', retainedTools.clearValuesTool, retainedTools.handleClearValues),
   {
     name: 'create_spreadsheet',
-    title: legacyTools.createSpreadsheetTool.name,
-    description: legacyTools.createSpreadsheetTool.description ?? 'Create a spreadsheet.',
+    title: retainedTools.createSpreadsheetTool.name,
+    description: retainedTools.createSpreadsheetTool.description ?? 'Create a spreadsheet.',
     category: 'core',
     readOnly: false,
     inputSchema: {
@@ -434,28 +435,37 @@ export const OPERATIONS: readonly OperationDefinition[] = [
       operationResult(runtime, await runtime.createSpreadsheet(input)),
   },
 
-  legacyOperation('sheets', legacyTools.insertSheetTool, legacyTools.handleInsertSheet, {
+  retainedOperation('sheets', retainedTools.insertSheetTool, retainedTools.handleInsertSheet, {
     destructive: false,
   }),
-  legacyOperation('sheets', legacyTools.deleteSheetTool, legacyTools.handleDeleteSheet),
-  legacyOperation('sheets', legacyTools.duplicateSheetTool, legacyTools.handleDuplicateSheet, {
-    destructive: false,
-  }),
-  legacyOperation('sheets', legacyTools.copyToTool, legacyTools.handleCopyTo, {
-    destructive: false,
-  }),
-  legacyOperation(
+  retainedOperation('sheets', retainedTools.deleteSheetTool, retainedTools.handleDeleteSheet),
+  retainedOperation(
     'sheets',
-    legacyTools.updateSheetPropertiesTool,
-    legacyTools.handleUpdateSheetProperties,
+    retainedTools.duplicateSheetTool,
+    retainedTools.handleDuplicateSheet,
+    {
+      destructive: false,
+    }
+  ),
+  retainedOperation('sheets', retainedTools.copyToTool, retainedTools.handleCopyTo, {
+    destructive: false,
+  }),
+  retainedOperation(
+    'sheets',
+    retainedTools.updateSheetPropertiesTool,
+    retainedTools.handleUpdateSheetProperties,
     { destructive: false, idempotent: true }
   ),
-  legacyOperation('sheets', legacyTools.batchDeleteSheetsTool, legacyTools.handleBatchDeleteSheets),
-  legacyOperation('sheets', legacyTools.insertRowsTool, legacyTools.handleInsertRows, {
+  retainedOperation(
+    'sheets',
+    retainedTools.batchDeleteSheetsTool,
+    retainedTools.handleBatchDeleteSheets
+  ),
+  retainedOperation('sheets', retainedTools.insertRowsTool, retainedTools.handleInsertRows, {
     destructive: false,
   }),
-  legacyOperation('sheets', legacyTools.deleteRowsTool, legacyTools.handleDeleteRows),
-  legacyOperation('sheets', legacyTools.deleteColumnsTool, legacyTools.handleDeleteColumns),
+  retainedOperation('sheets', retainedTools.deleteRowsTool, retainedTools.handleDeleteRows),
+  retainedOperation('sheets', retainedTools.deleteColumnsTool, retainedTools.handleDeleteColumns),
   {
     name: 'insert_columns',
     title: 'Insert columns',
@@ -486,80 +496,104 @@ export const OPERATIONS: readonly OperationDefinition[] = [
       operationResult(runtime, await runtime.moveSpreadsheet(input)),
   },
 
-  legacyOperation('formatting', legacyTools.formatCellsTool, legacyTools.formatCellsHandler, {
+  retainedOperation('formatting', retainedTools.formatCellsTool, retainedTools.formatCellsHandler, {
     destructive: false,
     idempotent: true,
   }),
-  legacyOperation(
+  retainedOperation(
     'formatting',
-    legacyTools.batchFormatCellsTool,
-    legacyTools.handleBatchFormatCells,
+    retainedTools.batchFormatCellsTool,
+    retainedTools.handleBatchFormatCells,
     {
       destructive: false,
       idempotent: true,
     }
   ),
-  legacyOperation('formatting', legacyTools.updateBordersTool, legacyTools.updateBordersHandler, {
-    destructive: false,
-    idempotent: true,
-  }),
-  legacyOperation('formatting', legacyTools.getBorderMapTool, legacyTools.handleGetBorderMap, {
-    readOnly: true,
-    idempotent: true,
-  }),
-  legacyOperation('formatting', legacyTools.mergeCellsTool, legacyTools.mergeCellsHandler, {
-    destructive: false,
-  }),
-  legacyOperation('formatting', legacyTools.unmergeCellsTool, legacyTools.unmergeCellsHandler),
-  legacyOperation('formatting', legacyTools.getMergedCellsTool, legacyTools.handleGetMergedCells, {
-    readOnly: true,
-    idempotent: true,
-  }),
-  legacyOperation(
+  retainedOperation(
     'formatting',
-    legacyTools.getSheetFormattingTool,
-    legacyTools.handleGetSheetFormatting,
+    retainedTools.updateBordersTool,
+    retainedTools.updateBordersHandler,
+    {
+      destructive: false,
+      idempotent: true,
+    }
+  ),
+  retainedOperation(
+    'formatting',
+    retainedTools.getBorderMapTool,
+    retainedTools.handleGetBorderMap,
     {
       readOnly: true,
       idempotent: true,
     }
   ),
-  legacyOperation(
+  retainedOperation('formatting', retainedTools.mergeCellsTool, retainedTools.mergeCellsHandler, {
+    destructive: false,
+  }),
+  retainedOperation(
     'formatting',
-    legacyTools.getFormattingCompactTool,
-    legacyTools.handleGetFormattingCompact,
+    retainedTools.unmergeCellsTool,
+    retainedTools.unmergeCellsHandler
+  ),
+  retainedOperation(
+    'formatting',
+    retainedTools.getMergedCellsTool,
+    retainedTools.handleGetMergedCells,
+    {
+      readOnly: true,
+      idempotent: true,
+    }
+  ),
+  retainedOperation(
+    'formatting',
+    retainedTools.getSheetFormattingTool,
+    retainedTools.handleGetSheetFormatting,
+    {
+      readOnly: true,
+      idempotent: true,
+    }
+  ),
+  retainedOperation(
+    'formatting',
+    retainedTools.getFormattingCompactTool,
+    retainedTools.handleGetFormattingCompact,
     { readOnly: true, idempotent: true }
   ),
-  legacyOperation(
+  retainedOperation(
     'formatting',
-    legacyTools.addConditionalFormattingTool,
-    legacyTools.addConditionalFormattingHandler,
+    retainedTools.addConditionalFormattingTool,
+    retainedTools.addConditionalFormattingHandler,
     { destructive: false }
   ),
-  legacyOperation(
+  retainedOperation(
     'formatting',
-    legacyTools.getConditionalFormattingDataTool,
-    legacyTools.handleGetConditionalFormattingData,
+    retainedTools.getConditionalFormattingDataTool,
+    retainedTools.handleGetConditionalFormattingData,
     { readOnly: true, idempotent: true }
   ),
-  legacyOperation(
+  retainedOperation(
     'formatting',
-    legacyTools.getDataValidationTool,
-    legacyTools.handleGetDataValidation,
+    retainedTools.getDataValidationTool,
+    retainedTools.handleGetDataValidation,
     {
       readOnly: true,
       idempotent: true,
     }
   ),
-  legacyOperation('formatting', legacyTools.getBasicFilterTool, legacyTools.handleGetBasicFilter, {
-    readOnly: true,
-    idempotent: true,
-  }),
-  legacyOperation('formatting', legacyTools.insertLinkTool, legacyTools.handleInsertLink, {
+  retainedOperation(
+    'formatting',
+    retainedTools.getBasicFilterTool,
+    retainedTools.handleGetBasicFilter,
+    {
+      readOnly: true,
+      idempotent: true,
+    }
+  ),
+  retainedOperation('formatting', retainedTools.insertLinkTool, retainedTools.handleInsertLink, {
     destructive: false,
     idempotent: true,
   }),
-  legacyOperation('formatting', legacyTools.insertDateTool, legacyTools.handleInsertDate, {
+  retainedOperation('formatting', retainedTools.insertDateTool, retainedTools.handleInsertDate, {
     destructive: false,
     idempotent: true,
   }),
@@ -619,38 +653,43 @@ export const OPERATIONS: readonly OperationDefinition[] = [
       operationResult(runtime, await runtime.clearBasicFilter(input)),
   },
 
-  legacyOperation('charts', legacyTools.createChartTool, legacyTools.handleCreateChart, {
+  retainedOperation('charts', retainedTools.createChartTool, retainedTools.handleCreateChart, {
     destructive: false,
   }),
-  legacyOperation('charts', legacyTools.updateChartTool, legacyTools.handleUpdateChart, {
+  retainedOperation('charts', retainedTools.updateChartTool, retainedTools.handleUpdateChart, {
     destructive: false,
     idempotent: true,
   }),
-  legacyOperation('charts', legacyTools.deleteChartTool, legacyTools.handleDeleteChart),
+  retainedOperation('charts', retainedTools.deleteChartTool, retainedTools.handleDeleteChart),
 
-  legacyOperation('tables', legacyTools.addTableTool, legacyTools.addTableHandler, {
+  retainedOperation('tables', retainedTools.addTableTool, retainedTools.addTableHandler, {
     destructive: false,
   }),
-  legacyOperation('tables', legacyTools.updateTableTool, legacyTools.updateTableHandler, {
+  retainedOperation('tables', retainedTools.updateTableTool, retainedTools.updateTableHandler, {
     destructive: false,
     idempotent: true,
   }),
-  legacyOperation('tables', legacyTools.deleteTableTool, legacyTools.deleteTableHandler),
-  legacyOperation('tables', legacyTools.getTablesTool, legacyTools.getTablesHandler, {
+  retainedOperation('tables', retainedTools.deleteTableTool, retainedTools.deleteTableHandler),
+  retainedOperation('tables', retainedTools.getTablesTool, retainedTools.getTablesHandler, {
     readOnly: true,
     idempotent: true,
   }),
 
-  legacyOperation(
+  retainedOperation(
     'analysis',
-    legacyTools.getFullSheetSnapshotTool,
-    legacyTools.handleGetFullSheetSnapshot,
+    retainedTools.getFullSheetSnapshotTool,
+    retainedTools.handleGetFullSheetSnapshot,
     { readOnly: true, idempotent: true }
   ),
-  legacyOperation('analysis', legacyTools.compareRangesTool, legacyTools.handleCompareRanges, {
-    readOnly: true,
-    idempotent: true,
-  }),
+  retainedOperation(
+    'analysis',
+    retainedTools.compareRangesTool,
+    retainedTools.handleCompareRanges,
+    {
+      readOnly: true,
+      idempotent: true,
+    }
+  ),
 
   {
     name: 'sign_out',

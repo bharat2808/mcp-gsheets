@@ -85,6 +85,78 @@ describe('GoogleApiClient', () => {
     expect(firstUrl.searchParams.get('q')).toBe('trashed = false');
   });
 
+  it('offers only owned folders whose ancestry reaches the authenticated My Drive root', async () => {
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/files/root')) {
+        return new Response(
+          JSON.stringify({
+            id: 'my-drive-root',
+            name: 'My Drive',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [],
+            ownedByMe: true,
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          files: [
+            {
+              id: 'owned-parent',
+              name: 'Owned parent',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['my-drive-root'],
+              ownedByMe: true,
+            },
+            {
+              id: 'owned-child',
+              name: 'Owned child',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['owned-parent'],
+              ownedByMe: true,
+            },
+            {
+              id: 'shared-with-me',
+              name: 'Shared with me',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['my-drive-root'],
+              ownedByMe: false,
+            },
+            {
+              id: 'orphan',
+              name: 'Orphan',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: [],
+              ownedByMe: true,
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    };
+    const client = new GoogleApiClient(
+      {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expiryDate: Date.now() + 600_000,
+        scope: '',
+        tokenType: 'Bearer',
+      },
+      'client',
+      'GOCSPX-secret',
+      vi.fn(),
+      fetcher,
+      Date.now
+    );
+
+    await expect(client.listSelectableMyDriveFolders()).resolves.toEqual([
+      expect.objectContaining({ id: 'owned-parent' }),
+      expect.objectContaining({ id: 'owned-child' }),
+    ]);
+  });
+
   it('uses the append response range and verifies the written row', async () => {
     const metadata = { sheets: [{ properties: { sheetId: 1, title: 'Ledger' }, tables: [] }] };
     const fetcher = vi

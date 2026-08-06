@@ -54,7 +54,7 @@ function ReviewApp() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const { app, isConnected, error } = useApp({
-    appInfo: { name: 'GSheets review', version: '0.1.0' },
+    appInfo: { name: 'GSheets review', version: '0.2.0' },
     capabilities: {},
     onAppCreated: (createdApp) => {
       createdApp.ontoolresult = (params) => {

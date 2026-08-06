@@ -1,21 +1,15 @@
-# Completion audit
+# 0.2.0 completion audit
 
-| Requirement | Implementation evidence | Verification evidence |
-| --- | --- | --- |
-| Google Sheets only | Drive MIME filtering in `src/drive/catalog.ts`; no Excel adapter is registered | Drive catalog unit tests |
-| Interactive Google sign-in | Loopback OAuth, PKCE, offline tokens, and local setup page in `src/auth/` | OAuth and setup-server unit tests |
-| Selected My Drive folders; no shared drives | Encrypted folder selection plus `driveId` exclusion | Drive catalog and Google client unit tests |
-| Instant cached catalog | `LocalIndex.getCatalog`; one-call `lastSyncedAt`, flat records, and nested tree | encrypted index, catalog-tree, and protocol tests |
-| Tabs, native tables, headers, used ranges, identifiers, row fingerprints | parser, Google metadata reader, and encrypted SQLite schema with formatted/raw row forms | parser, indexing, sync, and storage tests |
-| Startup catch-up and five-minute polling | `GSheetsRuntime.initialize` and unref'd poll timer | runtime code review; sync behavior tests |
-| Only changed Drive revisions are downloaded and compared | version gate in `SyncService.refresh` | unchanged-revision and deleted-tab sync tests |
-| Recent semantic changes | snapshot comparison by unique identifier or row number | row comparison and sync tests |
-| Standard `search` and `fetch` | exact one-text-item company-knowledge responses | in-memory MCP protocol test |
-| Confirmation-gated append/update only | short-lived proposals, app-only tools, metadata-only nonce, formula and duplicate rejection | proposal and MCP boundary tests |
-| Revision/target preflight and post-write verification | raw-value preflight plus exact-cell `values:batchUpdate` in `GoogleApiClient.apply` | proposal, formatted/raw, append, and untouched-formula tests |
-| Encrypted audit history | `write_audits` table and runtime approval recording | storage encryption test |
-| Visual Approve/Edit/Cancel UI | single-file React MCP App under `ui/` | Vite production build and tool metadata tests |
-| Local cross-platform runtime | Node 22 built-in SQLite, `@napi-rs/keyring`, stdio MCP, OS-specific data directory | macOS tests plus cross-platform package dependencies |
-| Codex plugin and skill | `.codex-plugin/plugin.json`, `.mcp.json`, and `skills/gsheets` | official plugin and skill validators |
+| Release requirement | Automated evidence |
+| --- | --- |
+| Normalized registry and category filtering | registry, category, server discovery, and built smoke tests |
+| Desktop OAuth with full Drive plus Sheets | OAuth, setup, runtime, and gateway tests |
+| Owned selected My Drive boundary | setup display, persisted-selection sanitation, folder ancestry, and spreadsheet authorization tests |
+| Risk review, app-only approval, verification, audit, and refresh | classifier, proposal, workflow, runtime, storage, and UI tests |
+| Exact sign-out and batch-delete previews | runtime and gateway proposal tests |
+| Default, every category, `all`, and read-only built discovery | `npm run smoke:built` |
+| Every registered schema invocation | `npm run smoke:built` invokes all 63 built operations without credentials |
+| Plugin package schema | plugin-creator validator |
+| Gated disposable School Records lifecycle | non-secret integration contract plus `npm run integration:live` |
 
-Automated verification does not substitute for a live Google acceptance test. A local user supplies the Desktop client ID and matching secret through the localhost setup page; the secret is stored through `@napi-rs/keyring` and never enters the MCP tool surface. Development can still source the non-secret ID from `GSHEETS_GOOGLE_CLIENT_ID`, and a release build can set `PUBLISHER_GOOGLE_CLIENT_ID`. Live sign-in, folder selection, reading, and a reversible append/update should be exercised with that client before marketplace release.
+The credentialed live acceptance run is intentionally separate from CI. Its exact prerequisites and command are in the README. A release report must say whether that command actually ran; successful unit, smoke, or dry-run validation is not evidence of a Google account run.

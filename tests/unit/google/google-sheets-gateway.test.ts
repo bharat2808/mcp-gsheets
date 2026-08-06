@@ -101,6 +101,47 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     expect(fetcher.mock.calls.at(-1)?.[0]).toContain('destination-book');
   });
 
+  it('previews the exact worksheet names removed by a batch deletion', async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        sheets: [
+          { properties: { sheetId: 11, title: 'Students' } },
+          { properties: { sheetId: 22, title: 'Exams' } },
+          { properties: { sheetId: 33, title: 'Attendance' } },
+        ],
+      },
+    });
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ version: '9' }), { status: 200 })),
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { get, values: { batchGet: vi.fn() } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
+    );
+
+    const preflight = await gateway.inspectOperation(
+      'batch_delete_sheets',
+      { spreadsheetId: 'school-records', sheetIds: [33, 22] },
+      []
+    );
+
+    expect(preflight.preview).toEqual({
+      kind: 'exact',
+      before: {
+        worksheets: [
+          { sheetId: 33, title: 'Attendance' },
+          { sheetId: 22, title: 'Exams' },
+        ],
+      },
+      after: { deletedSheetIds: [33, 22] },
+    });
+  });
+
   it('constructs retained clients with the Desktop OAuth credential', () => {
     const sheetsClient = { spreadsheets: {} };
     const sheets = vi.spyOn(google, 'sheets').mockReturnValue(sheetsClient as any);

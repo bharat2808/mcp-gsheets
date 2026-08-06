@@ -5,7 +5,7 @@ import { validateCreateSpreadsheetInput } from '../utils/validators.js';
 import { formatSpreadsheetCreatedResponse } from '../utils/formatters.js';
 
 export const createSpreadsheetTool: Tool = {
-  name: 'sheets_create_spreadsheet',
+  name: 'create_spreadsheet',
   description: 'Create a new Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',

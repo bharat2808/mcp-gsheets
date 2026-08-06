@@ -5,7 +5,11 @@ import {
   resolveToolCategories,
   ToolCategoryConfigError,
 } from '../../../src/config/toolsets.js';
-import { APP_ONLY_TOOL_NAMES, OPERATIONS, PUBLIC_TOOL_NAMES } from '../../../src/plugin/tool-registry.js';
+import {
+  APP_ONLY_TOOL_NAMES,
+  OPERATIONS,
+  PUBLIC_TOOL_NAMES,
+} from '../../../src/plugin/tool-registry.js';
 
 function operation(name: string) {
   const found = OPERATIONS.find((candidate) => candidate.name === name);
@@ -41,7 +45,9 @@ describe('resolveToolCategories', () => {
       );
       expect(enabled).toEqual(['core']);
       expect([...allowed]).toEqual(
-        OPERATIONS.filter((operation) => operation.category === 'core').map((operation) => operation.name)
+        OPERATIONS.filter((operation) => operation.category === 'core').map(
+          (operation) => operation.name
+        )
       );
     }
   });
@@ -71,9 +77,9 @@ describe('resolveToolCategories', () => {
   });
 
   it('accepts category names with mixed case and spacing', () => {
-    expect(
-      resolveToolCategories({ GSHEETS_TOOL_CATEGORIES: ' Charts , TABLES ' }).enabled
-    ).toEqual(['core', 'charts', 'tables']);
+    expect(resolveToolCategories({ GSHEETS_TOOL_CATEGORIES: ' Charts , TABLES ' }).enabled).toEqual(
+      ['core', 'charts', 'tables']
+    );
   });
 
   it('returns categories in declaration order regardless of input order', () => {
@@ -148,7 +154,7 @@ describe('registry annotations', () => {
     });
   });
 
-  it('leaves legacy destructive operations at the destructive default', () => {
+  it('leaves retained destructive operations at the destructive default', () => {
     const annotations = operation('delete_sheet').annotations;
     expect(annotations.destructiveHint).toBeUndefined();
     expect(annotations.readOnlyHint).toBeUndefined();

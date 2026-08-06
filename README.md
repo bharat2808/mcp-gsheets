@@ -1,63 +1,71 @@
-# GSheets local Codex plugin
+# GSheets local plugin
 
-This fork turns `freema/mcp-gsheets` into a focused, local Codex plugin for Google Sheets only. It catalogs Sheets beneath selected My Drive folders, keeps an encrypted row index, reports changes between refreshes, and permits only visually confirmed row appends and updates.
+GSheets `0.2.0` is a local Codex plugin for finding and safely changing Google Sheets in explicitly selected folders in the authenticated account's owned My Drive. It keeps an encrypted local index, exposes one normalized MCP operation surface, and routes all Google access through Desktop OAuth.
 
-## Current status
+`0.2.0` is intentionally breaking: operation names no longer carry a product prefix, and no public aliases are provided.
 
-The fork is technically suitable as the base: its Google Sheets operations and MCP setup were reusable, while the public 44-tool surface and service-account startup were replaced. The plugin now exposes 9 model tools and 3 app-only confirmation tools.
+## Build and connect
 
-Google OAuth uses a **Desktop app** client ID and matching client secret. The localhost setup page stores the non-secret ID in the plugin data directory's user-only `config.json` and stores the secret through `@napi-rs/keyring` in the operating-system credential store. OAuth also uses PKCE and a loopback redirect.
-
-## Develop and run
-
-Requirements: Node.js 22.13 or newer and npm.
+Requirements: Node.js 22.13 or newer, npm, and a Google Cloud project with the Google Sheets API and Google Drive API enabled.
 
 ```bash
 npm ci
 npm run build
-npm start
+npm run setup
 ```
 
-The MCP server runs over stdio. Call `get_connection_status`, open its local setup URL, and enter the ID and secret for a Google OAuth client created with application type **Desktop app**. Then sign into Google and select My Drive folders. The setup page never selects shared drives, and OAuth credentials are never accepted through model-visible MCP tool arguments.
+Create an OAuth client with application type **Desktop app**. Start the MCP server, call `get_connection_status`, open its loopback-only setup URL, and enter the client ID and secret there. The secret is stored in the operating-system credential vault and never accepted through model-visible tool arguments. Sign in, then select one or more folders from the setup page.
 
-The Codex plugin manifest is `.codex-plugin/plugin.json`; `.mcp.json` launches `dist/index.js`. Build before loading this repository as a local plugin.
+The release requests Google Sheets access plus full `https://www.googleapis.com/auth/drive`. Full Drive access is necessary to discover and operate on pre-existing files selected through the custom folder picker; `drive.file` cannot authorize arbitrary existing spreadsheets. The product boundary remains narrower than the OAuth grant: candidates and persisted selections must be owned by the authenticated account, root-reachable in that account's My Drive, and explicitly selected. Shared Drives and Shared-with-me folder roots are not supported.
 
-### Install from the repo-local marketplace
+Upgrading from `0.1.x` requires one-time Google re-consent. `get_connection_status` reports `reConsentRequired` and the missing scope, and the setup page offers **Reconnect Google**. Existing encrypted catalog data is preserved during re-consent and is cleared only after a different Google account is successfully adopted or reviewed sign-out completes.
 
-Build the plugin, add this repository as a local marketplace, and install its entry:
+## Operation categories
 
-```bash
-npm ci
-npm run build
-codex plugin marketplace add "$PWD"
-codex plugin add gsheets@gsheets-local
-```
+The default surface is `core`. Set `GSHEETS_TOOL_CATEGORIES` to a comma-separated list or `all`; `core` is always included.
 
-Start a new Codex task, ask for the connection status, and open the returned localhost page. The optional `GSHEETS_DATA_DIR` variable overrides the operating-system data directory when an isolated test profile is useful. Client-ID resolution uses the environment override first, then local `config.json`, then the publisher default. The client secret is always read from the operating-system credential store.
+| Category | Purpose |
+| --- | --- |
+| `core` | connection, catalog, indexed search/fetch, refresh, values, and reviewed changes |
+| `sheets` | worksheet, row/column, copy, move, and structural operations |
+| `formatting` | formats, borders, merges, validation, filters, links, and dates |
+| `charts` | create, update, and delete charts |
+| `tables` | native Google Sheets tables |
+| `analysis` | snapshots and range comparison |
+| `account` | reviewed sign-out |
 
-## Security and behavior
+`GSHEETS_READ_ONLY=true` removes all mutations and proposal-management operations from discovery. See [docs/TOOLS.md](docs/TOOLS.md) for the complete current operation list.
 
-- OAuth scopes: identity, Drive metadata read-only, and Google Sheets.
-- Tokens and the local AES key use the operating-system credential vault.
-- A user-supplied OAuth client ID is stored outside the repository with user-only file permissions; its matching secret is stored through `@napi-rs/keyring` and never returned through MCP.
-- Replacing locally configured credentials clears OAuth tokens and account-bound indexed data before a different Google account can be connected.
-- Cell payloads, headers, selected folder IDs, and change summaries are AES-256-GCM encrypted in SQLite.
-- Search uses keyed HMAC blind tokens; plaintext row values are not stored.
-- Startup performs catch-up indexing; polling repeats every five minutes while the server is running, and unchanged Drive versions skip content downloads.
-- Native table metadata, tab headers, used ranges, row identifiers, row fingerprints, and separate formatted/raw row values are indexed securely.
-- `search` and `fetch` implement the standard company-knowledge payload contract.
-- Writes are proposals that expire after 15 minutes. Approval requires an app-only nonce and checks the Drive file revision and target values immediately before writing.
-- Successful writes are re-read for verification and stored in an encrypted audit history.
-- Supported writes are row append and exact-cell row update. Unchanged cells and formulas are preserved; formula generation, deletion, formatting, creation, and structural edits are rejected.
+## Safety model
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data flow and the documented Google Sheets preflight race.
+- Reads and verified non-lossy creations, insertions, copies, and formats can execute directly.
+- Appends, row changes, formulas, populated overwrites, removals, destructive structure changes, chart/table replacement, and sign-out require visual review.
+- `edit_change`, `approve_change`, and `cancel_change` are app-only. The confirmation token is delivered only in app metadata.
+- Approval rechecks Drive revisions and target state, then applies, verifies, audits, and refreshes through one serialized mutation workflow.
+- A write that applied but could not be verified or refreshed is reported as `applied_verification_pending`; overlapping destructive work stays blocked until a successful refresh.
+- Sign-out has an exact preview, optionally revokes the Google grant, deletes tokens, and clears account-bound encrypted index data only after approval.
+
+Tokens, the OAuth client secret, and the local data key live in the operating-system credential vault. Indexed values, headers, selections, detected changes, audits, and pending-verification records are AES-256-GCM encrypted in SQLite; search uses keyed HMAC blind tokens.
 
 ## Verify
 
 ```bash
 npm run check:all
+npm run smoke:built
+npm run integration:dry
 python3 /Users/home/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 python3 /Users/home/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/gsheets
 ```
 
-This repository remains MIT licensed. The original implementation and history are retained in the fork.
+`integration:dry` validates and prints the gated School Records lifecycle without using credentials. For a real acceptance run, use a dedicated Google test account and folder, build first, connect an isolated `GSHEETS_DATA_DIR` profile through its localhost setup page, and note that reviewed sign-out removes the connected token from the OS credential vault. Then run:
+
+```bash
+GSHEETS_LIVE_TEST=1 \
+GSHEETS_LIVE_DATA_DIR=/absolute/path/to/isolated-profile \
+GSHEETS_LIVE_FOLDER_ID=selected-owned-my-drive-folder-id \
+npm run integration:live
+```
+
+The live harness creates **School Records** with Students, Exams, and Attendance worksheets; exercises reviewed and direct work, search, audits, cancel/approve, disposal, and reviewed sign-out; and moves the workbook to trash in cleanup. It fails closed if credentials, selection, verification, or cleanup are unavailable. Automated checks do not claim this credentialed command ran.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for data flow and trust boundaries.

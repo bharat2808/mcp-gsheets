@@ -9,7 +9,6 @@ import {
   missingGoogleOAuthScopes,
   parseOAuthCallback,
 } from './google-oauth.js';
-import { DRIVE_FOLDER_MIME_TYPE } from '../drive/catalog.js';
 import { validateGoogleOAuthClientId } from '../config/google-oauth-client.js';
 import { GoogleSheetsGateway } from '../google/google-api-client.js';
 
@@ -179,10 +178,15 @@ export class OAuthSetupServer implements OAuthSetupServerHandle {
         credentials.clientSecret,
         (next) => this.options.vault.saveTokens(next)
       );
-      const folders = (await client.listFileGraph())
-        .filter((file) => file.mimeType === DRIVE_FOLDER_MIME_TYPE)
-        .sort((first, second) => first.name.localeCompare(second.name));
-      const selected = new Set(this.options.getSelectedFolderIds());
+      const folders = (await client.listSelectableMyDriveFolders()).sort((first, second) =>
+        first.name.localeCompare(second.name)
+      );
+      const selectableIds = new Set(folders.map((folder) => folder.id));
+      const persisted = this.options.getSelectedFolderIds();
+      const selected = new Set(persisted.filter((folderId) => selectableIds.has(folderId)));
+      if (selected.size !== persisted.length) {
+        await this.options.setSelectedFolderIds([...selected]);
+      }
       body = `<h1>Choose My Drive folders</h1><p><small>Only Google Sheets beneath these folders are indexed. Shared drives are excluded.</small></p><form method="post" action="/folders"><input type="hidden" name="token" value="${this.#formToken}">${folders.map((folder) => `<label class="folder"><input type="checkbox" name="folder" value="${escapeHtml(folder.id)}" ${selected.has(folder.id) ? 'checked' : ''}> ${escapeHtml(folder.name)}</label>`).join('')}<button type="submit">Save folders</button></form>`;
     }
     response.writeHead(200, HTML_HEADERS);

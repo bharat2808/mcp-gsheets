@@ -8,7 +8,7 @@ const CheckAccessSchema = z.object({
 });
 
 export const checkAccessTool: Tool = {
-  name: 'sheets_check_access',
+  name: 'check_access',
   description:
     'Check access permissions for a spreadsheet. Returns information about what operations are allowed.',
   inputSchema: {

@@ -15,7 +15,7 @@ const inputSchema = z.object({
 });
 
 export const getBorderMapTool: Tool = {
-  name: 'sheets_get_border_map',
+  name: 'get_border_map',
   description:
     'Returns a visual tabular map of borders for a range. ' +
     'Instead of per-cell JSON with 4 separate border objects, returns compact grids showing ' +

@@ -227,9 +227,9 @@ describe('LocalIndex', () => {
     tempDirectories.push(directory);
     const databasePath = join(directory, 'index.sqlite');
     const key = Buffer.alloc(32, 7);
-    const legacy = new LocalIndex(databasePath, key);
-    legacy.initialize();
-    legacy.upsertSpreadsheet({
+    const priorIndex = new LocalIndex(databasePath, key);
+    priorIndex.initialize();
+    priorIndex.upsertSpreadsheet({
       id: 'book-1',
       name: 'Accounts',
       path: '/Accounts',
@@ -238,7 +238,7 @@ describe('LocalIndex', () => {
       indexStatus: 'current',
       lastIndexedAt: '2026-08-05T00:00:00.000Z',
     });
-    legacy.recordChanges({
+    priorIndex.recordChanges({
       spreadsheetId: 'book-1',
       spreadsheetName: 'Accounts',
       sheetId: 1,
@@ -246,7 +246,7 @@ describe('LocalIndex', () => {
       detectedAt: '2026-08-05T00:02:00.000Z',
       changes: [{ kind: 'modified', rows: [2] }],
     });
-    legacy.close();
+    priorIndex.close();
     const raw = new DatabaseSync(databasePath);
     raw.exec('PRAGMA user_version = 1; DROP TABLE IF EXISTS pending_verifications;');
     raw.close();

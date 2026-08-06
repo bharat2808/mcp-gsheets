@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Breaking: normalized all public operation names and removed public aliases.
+- Added category and read-only discovery controls over one typed operation registry.
+- Routed operations through Desktop OAuth with full Drive plus Sheets scopes and one-time re-consent.
+- Enforced selected, owned, root-reachable My Drive authorization; Shared Drives remain unsupported.
+- Added generalized visual review, exact destructive previews, serialized application, verification, encrypted audits, and pending-verification blocking.
+- Added built discovery/schema smoke validation and the explicitly gated disposable School Records acceptance harness.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

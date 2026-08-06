@@ -9,7 +9,7 @@ import { parseJsonInput } from '../utils/json-parser.js';
 import { ToolResponse } from '../types/tools.js';
 
 export const batchFormatCellsTool: Tool = {
-  name: 'sheets_batch_format_cells',
+  name: 'batch_format_cells',
   description: 'Format multiple cell ranges in a Google Sheet in a single operation',
   inputSchema: {
     type: 'object',

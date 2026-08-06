@@ -5,7 +5,7 @@ import { validateBatchUpdateValuesInput } from '../utils/validators.js';
 import { formatUpdateResponse } from '../utils/formatters.js';
 
 export const batchUpdateValuesTool: Tool = {
-  name: 'sheets_batch_update_values',
+  name: 'batch_update_values',
   description: 'Update values in multiple ranges of a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',

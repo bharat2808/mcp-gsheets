@@ -85,7 +85,7 @@ describe('handleGetBasicFilter', () => {
     expect(parsed.hasBasicFilter).toBe(false);
   });
 
-  it('should handle legacy criteria format', async () => {
+  it('should handle deprecated criteria format', async () => {
     mockSheets.spreadsheets.get.mockResolvedValue({
       data: {
         sheets: [

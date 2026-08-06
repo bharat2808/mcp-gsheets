@@ -14,7 +14,7 @@ const inputSchema = z.object({
 });
 
 export const getDataValidationTool: Tool = {
-  name: 'sheets_get_data_validation',
+  name: 'get_data_validation',
   description:
     'Read data validation rules (checkboxes, dropdown lists, custom formulas, etc.) from a sheet or range. ' +
     'Returns a compact list of unique validation rules grouped by their cell ranges ' +

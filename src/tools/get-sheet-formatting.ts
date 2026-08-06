@@ -14,7 +14,7 @@ const inputSchema = z.object({
 });
 
 export const getSheetFormattingTool: Tool = {
-  name: 'sheets_get_sheet_formatting',
+  name: 'get_sheet_formatting',
   description:
     'Read cell formatting (background color, text color, font family, font size, bold, italic, ' +
     'horizontal/vertical alignment, wrapStrategy, textRotation, numberFormat) for a range. ' +

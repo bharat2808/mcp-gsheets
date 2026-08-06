@@ -16,12 +16,12 @@ const inputSchema = z.object({
 });
 
 export const getFormattingCompactTool: Tool = {
-  name: 'sheets_get_formatting_compact',
+  name: 'get_formatting_compact',
   description:
     'Returns cell formatting for a range as compact A1Range→format pairs. ' +
     'Adjacent cells with identical formatting are collapsed into rectangular ranges ' +
     '(run-length encoded). Reduces output by 90%+ compared to per-cell formatting for typical sheets. ' +
-    'Use instead of sheets_get_full_sheet_snapshot when you only need formatting data. ' +
+    'Use instead of get_full_sheet_snapshot when you only need formatting data. ' +
     'Supported fields: backgroundColor, backgroundColorStyle, textFormat, horizontalAlignment, ' +
     'verticalAlignment, wrapStrategy, textRotation, numberFormat, padding, borders.',
   inputSchema: {

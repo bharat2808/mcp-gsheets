@@ -5,9 +5,15 @@ import { OAuthSetupServer } from '../../../src/auth/setup-server.js';
 
 class MemoryBackend implements CredentialBackend {
   private readonly values = new Map<string, string>();
-  async getPassword(service: string, account: string) { return this.values.get(`${service}:${account}`) ?? null; }
-  async setPassword(service: string, account: string, password: string) { this.values.set(`${service}:${account}`, password); }
-  async deletePassword(service: string, account: string) { return this.values.delete(`${service}:${account}`); }
+  async getPassword(service: string, account: string) {
+    return this.values.get(`${service}:${account}`) ?? null;
+  }
+  async setPassword(service: string, account: string, password: string) {
+    this.values.set(`${service}:${account}`, password);
+  }
+  async deletePassword(service: string, account: string) {
+    return this.values.delete(`${service}:${account}`);
+  }
 }
 
 describe('OAuthSetupServer', () => {
@@ -131,6 +137,75 @@ describe('OAuthSetupServer', () => {
     expect(html).toContain('Reconnect Google');
     expect(html).toContain('Continue with Google');
     expect(await vault.loadTokens()).not.toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('displays and retains only owned root-reachable My Drive folders', async () => {
+    const vault = new CredentialVault(new MemoryBackend());
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    const realFetch = fetch;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('http://127.0.0.1')) {
+        return realFetch(input, init);
+      }
+      if (url.includes('/files/root')) {
+        return new Response(
+          JSON.stringify({
+            id: 'root-id',
+            name: 'My Drive',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [],
+            ownedByMe: true,
+          })
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          files: [
+            {
+              id: 'owned-folder',
+              name: 'Owned folder',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['root-id'],
+              ownedByMe: true,
+            },
+            {
+              id: 'shared-folder',
+              name: 'Shared folder',
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: ['root-id'],
+              ownedByMe: false,
+            },
+          ],
+        })
+      );
+    });
+    const setSelectedFolderIds = vi.fn();
+    server = new OAuthSetupServer({
+      vault,
+      getClientCredentials: async () => ({
+        clientId: 'desktop-client.apps.googleusercontent.com',
+        clientSecret: 'GOCSPX-secret',
+      }),
+      saveClientCredentials: vi.fn(),
+      getSelectedFolderIds: () => ['owned-folder', 'shared-folder'],
+      setSelectedFolderIds,
+      onConnected: vi.fn(),
+    });
+    const setupUrl = await server.start();
+
+    const html = await (await fetch(setupUrl)).text();
+
+    expect(html).toContain('Owned folder');
+    expect(html).not.toContain('Shared folder');
+    expect(setSelectedFolderIds).toHaveBeenCalledWith(['owned-folder']);
     vi.unstubAllGlobals();
   });
 

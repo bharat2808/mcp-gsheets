@@ -14,7 +14,7 @@ const inputSchema = z.object({
 });
 
 export const getConditionalFormattingDataTool: Tool = {
-  name: 'sheets_get_conditional_formatting',
+  name: 'get_conditional_formatting',
   description:
     'Read conditional formatting rules and banded ranges (alternating row/column colors) for a sheet. ' +
     'CF formulas are normalized to English locale (semicolons → commas) by default. ' +

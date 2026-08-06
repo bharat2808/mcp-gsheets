@@ -70,7 +70,7 @@ const formatCellsInputSchema = z.object({
 });
 
 export const formatCellsTool: Tool = {
-  name: 'sheets_format_cells',
+  name: 'format_cells',
   description: 'Format cells in a Google Sheet (colors, fonts, alignment, number formats)',
   inputSchema: {
     type: 'object',

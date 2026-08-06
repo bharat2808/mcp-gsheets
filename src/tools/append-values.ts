@@ -5,7 +5,7 @@ import { validateAppendValuesInput } from '../utils/validators.js';
 import { formatAppendResponse } from '../utils/formatters.js';
 
 export const appendValuesTool: Tool = {
-  name: 'sheets_append_values',
+  name: 'append_values',
   description:
     'Append values to the end of a table in a Google Sheets spreadsheet. ' +
     'IMPORTANT: By default, this will OVERWRITE existing empty cells. ' +

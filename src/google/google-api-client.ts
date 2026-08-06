@@ -366,6 +366,40 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     return files;
   }
 
+  async listSelectableMyDriveFolders(): Promise<DriveFileMetadata[]> {
+    const [files, root] = await Promise.all([this.listFileGraph(), this.#rootFolder()]);
+    const folders = new Map(
+      files
+        .filter(
+          (file) =>
+            file.mimeType === 'application/vnd.google-apps.folder' &&
+            file.ownedByMe === true &&
+            !file.driveId
+        )
+        .map((file) => [file.id, file])
+    );
+    const reachesRoot = (folder: DriveFileMetadata): boolean => {
+      const pending = [...folder.parents];
+      const visited = new Set<string>();
+      while (pending.length > 0) {
+        const parentId = pending.shift();
+        if (!parentId || visited.has(parentId)) {
+          continue;
+        }
+        if (parentId === root.id) {
+          return true;
+        }
+        visited.add(parentId);
+        const parent = folders.get(parentId);
+        if (parent) {
+          pending.push(...parent.parents);
+        }
+      }
+      return false;
+    };
+    return [...folders.values()].filter(reachesRoot);
+  }
+
   async getAccountIdentity(): Promise<string> {
     const response = await this.#json<{ user?: { permissionId?: string } }>(
       'https://www.googleapis.com/drive/v3/about?fields=user%28permissionId%29'
@@ -990,13 +1024,31 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       'append_values',
       'prepare_row_change',
     ].includes(operation);
-    const before = valueOperation
+    let before: unknown = valueOperation
       ? operation === 'batch_update_values'
         ? valueRanges.map((entry) => ({ range: entry.range, values: entry.values }))
         : (valueRanges[0]?.values ?? null)
       : { ranges: valueRanges, metadata: metadataState ?? null };
-    const after =
+    let after: unknown =
       operation === 'batch_update_values' ? arguments_.data : (arguments_.values ?? arguments_);
+    if (operation === 'batch_delete_sheets') {
+      const requestedIds = Array.isArray(arguments_.sheetIds)
+        ? arguments_.sheetIds.filter((sheetId): sheetId is number => typeof sheetId === 'number')
+        : [];
+      const sheets = (metadataState as { sheets?: Array<{ properties?: any }> } | undefined)
+        ?.sheets;
+      const byId = new Map(
+        (sheets ?? []).flatMap((sheet) => {
+          const sheetId = sheet.properties?.sheetId;
+          const title = sheet.properties?.title;
+          return typeof sheetId === 'number' && typeof title === 'string'
+            ? [[sheetId, { sheetId, title }] as const]
+            : [];
+        })
+      );
+      before = { worksheets: requestedIds.flatMap((sheetId) => byId.get(sheetId) ?? []) };
+      after = { deletedSheetIds: requestedIds };
+    }
     return {
       affectedResources,
       preview: { kind: valueOperation ? 'values' : 'exact', before, after },

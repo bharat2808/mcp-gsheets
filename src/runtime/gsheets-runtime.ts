@@ -171,7 +171,7 @@ export class GSheetsRuntime {
     return hit;
   }
 
-  async executeLegacyOperation<T>(
+  async executeRetainedOperation<T>(
     operation: string,
     handler: (input: any) => T | Promise<T>,
     input: any,
@@ -289,10 +289,26 @@ export class GSheetsRuntime {
   }
 
   async prepareSignOut(input: { revokeGoogleGrant?: boolean } = {}) {
+    const revokeGoogleGrant = input.revokeGoogleGrant ?? false;
+    const before = this.#signOutPreviewBefore(revokeGoogleGrant);
+    const after = {
+      connection: 'signed_out',
+      selectedFolderCount: 0,
+      indexedSpreadsheetCount: 0,
+      approvedWriteCount: 0,
+      googleGrant: revokeGoogleGrant ? 'revoked' : 'retained',
+    };
     return this.#outcome(
       await this.#requiredWorkflow().execute({
         operation: 'sign_out',
-        arguments: { revokeGoogleGrant: input.revokeGoogleGrant ?? false },
+        arguments: { revokeGoogleGrant },
+        preflight: {
+          affectedResources: [{ kind: 'account', id: 'google', label: 'Connected Google account' }],
+          preview: { kind: 'exact', before, after },
+          riskInspection: {},
+          driveRevisions: {},
+          state: before,
+        },
         execute: (arguments_) =>
           this.signOut({ revokeGoogleGrant: arguments_.revokeGoogleGrant === true }),
         refresh: false,
@@ -523,10 +539,22 @@ export class GSheetsRuntime {
       { getSelectedFolderIds: () => this.#requiredIndex().getSelectedFolderIds() }
     );
     const accountIdentity = await client.getAccountIdentity();
+    const index = this.#requiredIndex();
+    const previousIdentity = index.getAccountIdentity();
+    const selectedFolderIds = index.getSelectedFolderIds();
+    const retainsAccountData = !previousIdentity || previousIdentity === accountIdentity;
+    const selectableIds =
+      retainsAccountData && selectedFolderIds.length > 0
+        ? new Set((await client.listSelectableMyDriveFolders()).map((folder) => folder.id))
+        : new Set<string>();
+    const retainedFolderIds = selectedFolderIds.filter((folderId) => selectableIds.has(folderId));
     const previousTokens = await this.#vault.loadTokens();
     try {
       await this.#vault.saveTokens(stagedTokens);
-      this.#requiredIndex().adoptAccountIdentity(accountIdentity);
+      index.adoptAccountIdentity(accountIdentity);
+      if (retainsAccountData) {
+        index.setSelectedFolderIds(retainedFolderIds);
+      }
     } catch (error) {
       if (previousTokens) {
         await this.#vault.saveTokens(previousTokens);
@@ -555,6 +583,11 @@ export class GSheetsRuntime {
               .map((resource) => resource.id)
           ),
         captureState: (proposal) => {
+          if (proposal.operation === 'sign_out') {
+            return Promise.resolve(
+              this.#signOutPreviewBefore(proposal.arguments.revokeGoogleGrant === true)
+            );
+          }
           if (proposal.operation === 'prepare_row_change') {
             const arguments_ = proposal.arguments as unknown as PrepareChangeInput;
             const after = proposal.preview.after as Record<string, CellValue>;
@@ -713,6 +746,17 @@ export class GSheetsRuntime {
       await client.validateSelectedMyDriveFolder(folderId, uniqueIds);
     }
     this.#requiredIndex().setSelectedFolderIds(uniqueIds);
+  }
+
+  #signOutPreviewBefore(revokeGoogleGrant: boolean) {
+    const index = this.#requiredIndex();
+    return {
+      connection: 'connected',
+      selectedFolderCount: index.getSelectedFolderIds().length,
+      indexedSpreadsheetCount: index.getCatalog().length,
+      approvedWriteCount: index.getWriteAudits().length,
+      googleGrant: revokeGoogleGrant ? 'active' : 'retained',
+    };
   }
 
   #disconnect(): void {

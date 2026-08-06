@@ -1,18 +1,18 @@
 ---
 name: gsheets
-description: Search, inspect, refresh, and safely update Google Sheets indexed from user-selected My Drive folders. Use when a request concerns the user's Google Sheets data, spreadsheet rows, recent changes, or an append/update that must be visually confirmed.
+description: Search, inspect, refresh, and safely update Google Sheets indexed from user-selected owned My Drive folders. Use when a request concerns the user's Google Sheets data, spreadsheet rows, recent changes, formatting, charts, tables, or a change that may require visual review.
 ---
 
 # GSheets
 
-Use the local encrypted index before asking the user for spreadsheet details.
+1. Call `get_connection_status` when connection, consent, folder selection, or freshness is uncertain. Share its localhost setup URL when needed. The user enters Desktop OAuth credentials only on that page; never request a client secret in chat.
+2. If `reConsentRequired` is true, explain that `0.2.0` needs one-time consent for full Drive plus Sheets access. The encrypted catalog is preserved. The operational boundary remains selected folders owned by the authenticated account and root-reachable in My Drive; Shared Drives and Shared-with-me roots are excluded.
+3. Use `get_catalog` and `explore_spreadsheet` to resolve spreadsheet, worksheet, table, and header details. Use `refresh_index` when current data is required.
+4. Use `search` for indexed discovery and `fetch` for the complete row. Cite the returned Google Sheets URL when discussing a row.
+5. Use `get_recent_changes` for detected revisions and encrypted approved-write audits.
 
-1. Call `get_connection_status` first when connection or freshness is uncertain. Give the returned local setup URL when OAuth credentials are missing, Google is not connected, or no folders are selected. The user enters the Desktop OAuth client ID and secret only on that localhost page; never ask for the secret in chat or through an MCP tool.
-2. Use `get_sheets_catalog` to resolve spreadsheet IDs and `explore_spreadsheet` to resolve tab IDs and headers.
-3. Use `search` for row discovery and `fetch` for a complete row. `search` intentionally returns citation metadata only; call `fetch` before using row values. Cite the returned Google Sheets URL when discussing a row.
-4. Call `refresh_sheets_index` when the user requests current data or the catalog says an entry is stale, pending, or unavailable.
-5. Use `get_recent_changes` for changes detected between refresh snapshots and the encrypted history of approved writes. Describe Drive revision checking as file-level detection and the returned row groups as locally computed comparisons.
+The default `core` category covers indexed and value workflows. Operations from `sheets`, `formatting`, `charts`, `tables`, `analysis`, or `account` may be unavailable unless configured. Never invent an alias for an unavailable operation.
 
-For writes, only prepare appends or updates with `prepare_sheet_change`. Never claim the proposal changed Google Sheets. Ask the user to review the rendered proposal and approve it there. Approval is executed only by the app after the user checks the confirmation box; never attempt to call app-only approval, edit, or cancel tools yourself.
+Treat a returned pending proposal as a preview, not a completed write. Ask the user to review it in the rendered app. Never call app-only `edit_change`, `approve_change`, or `cancel_change` from the model. Direct results are safe only after the tool reports success. If the result is `applied_verification_pending`, explain that Google may have changed but verification or refresh is incomplete and do not start overlapping destructive work.
 
-If preflight rejects a proposal because the revision or target row changed, refresh, show the new values, and prepare a new proposal. Do not work around the guard. Formula entry, deletion, formatting, sheet creation, and structural changes are unsupported.
+Appends, row changes, formulas, populated overwrites, removals, destructive structure changes, chart/table replacements, and sign-out require visual review. Exact structural proposals are not editable. If preflight reports changed revisions or target state, refresh and prepare a new proposal; never work around the guard.

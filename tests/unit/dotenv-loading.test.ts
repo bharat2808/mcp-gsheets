@@ -13,7 +13,7 @@ const INDEX_PATH = path.resolve(__dirname, '../../src/index.ts');
  */
 async function getStderrWithEnv(nodeEnv: string | undefined): Promise<string> {
   const env: Record<string, string> = {
-    ...process.env as Record<string, string>,
+    ...(process.env as Record<string, string>),
     PATH: process.env.PATH || '',
   };
 
@@ -23,22 +23,13 @@ async function getStderrWithEnv(nodeEnv: string | undefined): Promise<string> {
     delete env.NODE_ENV;
   }
 
-  // We don't need GOOGLE_APPLICATION_CREDENTIALS for this test —
-  // we just need to see whether dotenv loading produces stderr output
-  // before the server errors out on missing credentials.
-  delete env.GOOGLE_APPLICATION_CREDENTIALS;
-
   try {
-    const { stderr } = await execFileAsync(
-      'npx',
-      ['tsx', INDEX_PATH],
-      {
-        env,
-        timeout: 6000,
-        // Close stdin immediately so the process exits
-        // (StdioServerTransport will error when stdin closes)
-      },
-    );
+    const { stderr } = await execFileAsync('npx', ['tsx', INDEX_PATH], {
+      env,
+      timeout: 6000,
+      // Close stdin immediately so the process exits
+      // (StdioServerTransport will error when stdin closes)
+    });
     return stderr;
   } catch (error: any) {
     // The process will exit with an error (missing credentials or stdin close),
@@ -72,8 +63,7 @@ describe('dotenv loading', () => {
     // It will either succeed ("Loaded .env file") or fail ("Failed to load .env file").
     // Either way, it should have tried.
     const triedDotenv =
-      stderr.includes('Loaded .env file') ||
-      stderr.includes('Failed to load .env file');
+      stderr.includes('Loaded .env file') || stderr.includes('Failed to load .env file');
     expect(triedDotenv).toBe(true);
   }, 10000);
 });

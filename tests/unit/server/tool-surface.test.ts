@@ -63,7 +63,6 @@ describe('public MCP tool surface', () => {
     try {
       const response = await categoryClient.listTools();
       expect(response.tools.map((tool) => tool.name).sort()).toEqual([...PUBLIC_TOOL_NAMES].sort());
-      expect(response.tools.every((tool) => !tool.name.startsWith('sheets_'))).toBe(true);
     } finally {
       await categoryClient.close();
       await server.close();

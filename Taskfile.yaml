@@ -67,7 +67,7 @@ tasks:
       - task: fmt:check
 
   setup:
-    desc: Run interactive setup for MCP configuration
+    desc: Print Desktop OAuth MCP setup guidance
     cmds:
       - npm run setup
 
@@ -99,12 +99,17 @@ tasks:
     desc: Create .env file from example
     cmds:
       - cp .env.example .env
-      - echo "Created .env file. Please edit it with your credentials."
+      - echo "Created .env file. OAuth secrets are entered only on the localhost setup page."
 
-  test:sheets:
-    desc: Test Google Sheets tools with a real spreadsheet
+  integration:dry:
+    desc: Validate the non-secret School Records live-test contract
     cmds:
-      - node scripts/test-sheets-tools.js
+      - npm run integration:dry
+
+  integration:live:
+    desc: Run the explicitly gated School Records acceptance flow
+    cmds:
+      - npm run integration:live
 
   test:
     desc: Run all unit tests

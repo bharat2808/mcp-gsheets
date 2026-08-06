@@ -13,7 +13,7 @@ const inputSchema = z.object({
 });
 
 export const getBasicFilterTool: Tool = {
-  name: 'sheets_get_basic_filter',
+  name: 'get_basic_filter',
   description:
     'Read the Basic Filter (AutoFilter) configuration for a sheet, including the filtered range, ' +
     'sort specs, and per-column filter criteria (hidden values, conditions, color filters). ' +
@@ -55,7 +55,7 @@ export async function handleGetBasicFilter(input: any): Promise<ToolResponse> {
       );
     }
 
-    // Build human-readable filter criteria from filterSpecs (preferred) or legacy criteria
+    // Build human-readable filter criteria from filterSpecs (preferred) or deprecated criteria
     const filterCriteria: Array<{
       columnIndex: number;
       columnLetter: string;

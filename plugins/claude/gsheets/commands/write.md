@@ -25,4 +25,4 @@ Values can be comma-separated (single row) or JSON array (multiple rows).
 
 ## What Happens
 
-Calls `sheets_update_values` to write the data to the specified range.
+Calls `update_values`. Empty verified targets may apply directly; formulas and populated overwrites return a visual-review proposal. Report the returned status and never claim a pending proposal was written.

@@ -42,7 +42,7 @@ const updateBordersInputSchema = z.object({
 });
 
 export const updateBordersTool: Tool = {
-  name: 'sheets_update_borders',
+  name: 'update_borders',
   description: 'Update borders of cells in a Google Sheet',
   inputSchema: {
     type: 'object',

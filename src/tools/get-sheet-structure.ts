@@ -13,12 +13,12 @@ const inputSchema = z.object({
 });
 
 export const getSheetStructureTool: Tool = {
-  name: 'sheets_get_sheet_structure',
+  name: 'get_sheet_structure',
   description:
     'Lightweight tool returning ONLY structural/dimensional metadata for a sheet — no per-cell data. ' +
     'Returns: sheet dimensions, frozen rows/cols, tab color, sheet index, ' +
     'column widths array, row heights array, hidden columns/rows, and all merge ranges in A1 notation. ' +
-    'Use this instead of sheets_get_full_sheet_snapshot when per-cell formatting is not needed. ' +
+    'Use this instead of get_full_sheet_snapshot when per-cell formatting is not needed. ' +
     'Much faster and cheaper — single API call with minimal field mask.',
   inputSchema: {
     type: 'object',

@@ -32,4 +32,4 @@ Apply formatting to cells in a Google Sheets spreadsheet.
 
 ## What Happens
 
-Calls `sheets_format_cells` with the specified formatting options.
+Reads the target as needed, then calls `format_cells` with a structured `format` object and reports the returned verification status.

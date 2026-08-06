@@ -24,7 +24,7 @@ export function createGSheetsServer(
   environment: NodeJS.ProcessEnv = process.env
 ): McpServer {
   const server = new McpServer(
-    { name: 'gsheets', version: '0.1.0' },
+    { name: 'gsheets', version: '0.2.0' },
     {
       capabilities: { tools: { listChanged: false }, resources: { listChanged: false } },
     }

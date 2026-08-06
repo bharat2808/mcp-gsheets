@@ -113,7 +113,7 @@ const addConditionalFormattingInputSchema = z.object({
 });
 
 export const addConditionalFormattingTool: Tool = {
-  name: 'sheets_add_conditional_formatting',
+  name: 'add_conditional_formatting',
   description: 'Add conditional formatting rules to a Google Sheet',
   inputSchema: {
     type: 'object',
