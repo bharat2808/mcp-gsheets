@@ -57,6 +57,16 @@ describe('ProposalManager', () => {
     now += 15 * 60 * 1000 + 1;
 
     expect(() => manager.review(proposal.id)).toThrow('expired');
+    expect(() => manager.review(proposal.id)).toThrow('Unknown proposal');
+  });
+
+  it('bounds retained proposals and prunes the oldest entries', () => {
+    const gateway = { getRevisions: vi.fn(), captureState: vi.fn(), apply: vi.fn() };
+    const manager = new ProposalManager(gateway);
+    const proposals = Array.from({ length: 300 }, () => manager.prepare(baseRequest));
+
+    expect(() => manager.review(proposals[0]!.id)).toThrow('Unknown proposal');
+    expect(manager.review(proposals.at(-1)!.id).id).toBe(proposals.at(-1)!.id);
   });
 
   it('creates a versioned generalized proposal with a nonce and verification state', () => {

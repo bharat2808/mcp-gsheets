@@ -7,6 +7,7 @@ import {
   resolveLiveTestConfiguration,
   trashWorkbook,
 } from '../../scripts/live-school-records.js';
+import { dataDirectory } from '../../src/config/runtime.js';
 
 describe('School Records live integration contract', () => {
   it('defaults to a non-secret dry run with the complete disposable workbook lifecycle', () => {
@@ -31,21 +32,45 @@ describe('School Records live integration contract', () => {
     ]);
   });
 
-  it('requires an explicit gate, isolated data directory, and selected folder for live mode', () => {
+  it('requires an explicit gate, isolated data directory, credential service, and selected folder', () => {
     expect(() => resolveLiveTestConfiguration({ GSHEETS_LIVE_TEST: '1' })).toThrow(
-      'GSHEETS_LIVE_DATA_DIR and GSHEETS_LIVE_FOLDER_ID'
+      'GSHEETS_LIVE_DATA_DIR, GSHEETS_LIVE_FOLDER_ID, and GSHEETS_LIVE_CREDENTIAL_SERVICE'
     );
     expect(
       resolveLiveTestConfiguration({
         GSHEETS_LIVE_TEST: '1',
         GSHEETS_LIVE_DATA_DIR: '/tmp/gsheets-live-profile',
         GSHEETS_LIVE_FOLDER_ID: 'selected-folder',
+        GSHEETS_LIVE_CREDENTIAL_SERVICE: 'gsheets-live-school-records',
       })
     ).toEqual({
       mode: 'live',
       dataDirectory: '/tmp/gsheets-live-profile',
       folderId: 'selected-folder',
+      credentialService: 'gsheets-live-school-records',
     });
+  });
+
+  it('fails closed when live mode points at the production credential service', () => {
+    expect(() =>
+      resolveLiveTestConfiguration({
+        GSHEETS_LIVE_TEST: '1',
+        GSHEETS_LIVE_DATA_DIR: '/tmp/gsheets-live-profile',
+        GSHEETS_LIVE_FOLDER_ID: 'selected-folder',
+        GSHEETS_LIVE_CREDENTIAL_SERVICE: 'gsheets',
+      })
+    ).toThrow(/dedicated.*credential service/iu);
+  });
+
+  it('fails closed when live mode points at the production data directory', () => {
+    expect(() =>
+      resolveLiveTestConfiguration({
+        GSHEETS_LIVE_TEST: '1',
+        GSHEETS_LIVE_DATA_DIR: dataDirectory(),
+        GSHEETS_LIVE_FOLDER_ID: 'selected-folder',
+        GSHEETS_LIVE_CREDENTIAL_SERVICE: 'gsheets-live-school-records',
+      })
+    ).toThrow(/dedicated.*data directory/iu);
   });
 
   it('uses a cryptographically unique marker in every disposable workbook title', () => {

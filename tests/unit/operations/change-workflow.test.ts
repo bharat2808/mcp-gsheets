@@ -129,6 +129,49 @@ describe('ChangeWorkflow', () => {
     expect(dependencies.auditStore.hasPendingVerification).toHaveBeenLastCalledWith([]);
   });
 
+  it('keeps only resources whose post-write refresh failed pending', async () => {
+    const dependencies = fixture({ empty: true });
+    dependencies.refresh.mockResolvedValue({
+      refreshedResourceIds: ['spreadsheet:book', 'range:book:Plan!A2'],
+      removedResourceIds: [],
+      failedResourceIds: ['spreadsheet:other', 'range:other:Plan!A2'],
+      errors: { 'spreadsheet:other': 'Sheets unavailable' },
+    });
+    dependencies.gateway.inspect.mockResolvedValue({
+      affectedResources: [
+        { kind: 'spreadsheet' as const, id: 'book', label: 'book' },
+        { kind: 'range' as const, id: 'book:Plan!A2', label: 'Plan!A2' },
+        { kind: 'spreadsheet' as const, id: 'other', label: 'other' },
+        { kind: 'range' as const, id: 'other:Plan!A2', label: 'Plan!A2' },
+      ],
+      preview: { kind: 'values' as const, before: [], after: [['new']] },
+      riskInspection: { targetCellsVerifiedEmpty: true },
+      driveRevisions: { book: '7', other: '4' },
+      state: {},
+    });
+    const recordWriteOutcome = vi.fn();
+    const workflow = new ChangeWorkflow({
+      ...dependencies,
+      auditStore: { ...dependencies.auditStore, recordWriteOutcome },
+    });
+
+    const outcome = await workflow.execute(input);
+
+    expect(outcome).toMatchObject({
+      kind: 'direct',
+      verificationState: 'applied_verification_pending',
+      verificationError: expect.stringContaining('Sheets unavailable'),
+    });
+    expect(recordWriteOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pending: expect.objectContaining({
+          affectedResourceIds: ['spreadsheet:other', 'range:other:Plan!A2'],
+        }),
+        clearResourceIds: ['spreadsheet:book', 'range:book:Plan!A2'],
+      })
+    );
+  });
+
   it('rechecks revisions and target state before approved application', async () => {
     const dependencies = fixture();
     const execute = vi.fn().mockResolvedValue({ updatedRange: 'Plan!A2' });
@@ -144,6 +187,21 @@ describe('ChangeWorkflow', () => {
       'target state changed'
     );
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('marks reviewed application execution so retry policy can force a single attempt', async () => {
+    const dependencies = fixture();
+    const execute = vi.fn().mockResolvedValue({ updatedRange: 'Plan!A2' });
+    const workflow = new ChangeWorkflow(dependencies);
+    const prepared = await workflow.execute({ ...input, execute });
+    if (prepared.kind !== 'proposal') throw new Error('expected proposal');
+
+    await workflow.approve(
+      prepared.proposal.id,
+      workflow.confirmationToken(prepared.proposal.id)
+    );
+
+    expect(execute).toHaveBeenCalledWith(input.arguments, { approval: 'reviewed' });
   });
 
   it('executes one concurrent approval at most once', async () => {

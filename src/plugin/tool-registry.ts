@@ -70,7 +70,30 @@ function proposalResult(runtime: GSheetsRuntime, proposal: ChangeProposal, inclu
 }
 
 function operationResult(runtime: GSheetsRuntime, value: unknown) {
-  return isChangeProposal(value) ? proposalResult(runtime, value) : result(value);
+  if (isChangeProposal(value)) {
+    return proposalResult(runtime, value);
+  }
+  if (
+    value &&
+    typeof value === 'object' &&
+    'verificationState' in value &&
+    Array.isArray((value as { content?: unknown }).content)
+  ) {
+    const response = value as {
+      content: unknown[];
+      structuredContent?: { data?: unknown };
+      verificationState: unknown;
+      verificationError?: unknown;
+    };
+    return result({
+      result: response.structuredContent?.data ?? { content: response.content },
+      verificationState: response.verificationState,
+      ...(typeof response.verificationError === 'string'
+        ? { verificationError: response.verificationError }
+        : {}),
+    });
+  }
+  return result(value);
 }
 
 function isZodSchema(value: unknown): value is z.ZodTypeAny {
@@ -174,7 +197,10 @@ function retainedOperation(
         idempotent: options.idempotent === true,
         refreshIndex: options.readOnly !== true,
       });
-      return isChangeProposal(output) ? proposalResult(runtime, output) : output;
+      if (isChangeProposal(output)) {
+        return proposalResult(runtime, output);
+      }
+      return options.readOnly === true ? output : operationResult(runtime, output);
     },
   };
 }

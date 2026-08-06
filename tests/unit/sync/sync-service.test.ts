@@ -87,4 +87,69 @@ describe('SyncService', () => {
     ]);
     index.close();
   });
+
+  it('reports each indexed, failed, and removed spreadsheet without hiding partial failure', async () => {
+    const index = new LocalIndex(
+      join(mkdtempSync(join(tmpdir(), 'gsheets-sync-')), 'index.db'),
+      Buffer.alloc(32, 9)
+    );
+    index.initialize();
+    index.upsertSpreadsheet({
+      id: 'removed-book',
+      name: 'Removed',
+      path: '/Finance/Removed',
+      modifiedTime: '2026-08-05T00:00:00Z',
+      version: '1',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:00:00Z',
+    });
+    const drive = {
+      listFileGraph: async () => [
+        {
+          id: 'folder',
+          name: 'Finance',
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: [],
+        },
+        {
+          id: 'good-book',
+          name: 'Good',
+          mimeType: 'application/vnd.google-apps.spreadsheet',
+          parents: ['folder'],
+          version: '2',
+          modifiedTime: '2026-08-05T00:00:00Z',
+        },
+        {
+          id: 'failed-book',
+          name: 'Failed',
+          mimeType: 'application/vnd.google-apps.spreadsheet',
+          parents: ['folder'],
+          version: '3',
+          modifiedTime: '2026-08-05T00:00:00Z',
+        },
+      ],
+    };
+    const sheets = {
+      readSpreadsheet: vi.fn(async (spreadsheetId: string) => {
+        if (spreadsheetId === 'failed-book') {
+          throw new Error('Sheets unavailable');
+        }
+        return { sheets: [{ sheetId: 1, title: 'Data', values: [['ID'], ['A-1']] }] };
+      }),
+    };
+
+    const result = await new SyncService(index, drive, sheets).refresh(['folder']);
+
+    expect(result.resources).toEqual([
+      { spreadsheetId: 'failed-book', status: 'failed', error: 'Sheets unavailable' },
+      { spreadsheetId: 'good-book', status: 'indexed' },
+      { spreadsheetId: 'removed-book', status: 'removed' },
+    ]);
+    expect(result.spreadsheetsIndexed).toBe(1);
+    expect(index.getCatalog()).toEqual([
+      expect.objectContaining({ id: 'failed-book', indexStatus: 'unavailable' }),
+      expect.objectContaining({ id: 'good-book', indexStatus: 'current' }),
+    ]);
+    index.close();
+  });
 });

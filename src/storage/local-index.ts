@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -37,9 +37,13 @@ export class LocalIndex {
     if (this.#database) {
       return;
     }
-    mkdirSync(dirname(this.#databasePath), { recursive: true });
+    const directory = dirname(this.#databasePath);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
     const database = new DatabaseSync(this.#databasePath);
+    chmodSync(this.#databasePath, 0o600);
     database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+    this.#secureDatabaseFiles();
     database.exec(`
       CREATE TABLE IF NOT EXISTS spreadsheets (
         id TEXT PRIMARY KEY,
@@ -125,6 +129,7 @@ export class LocalIndex {
     if (databaseVersion < 2) {
       database.exec('PRAGMA user_version = 2');
     }
+    this.#secureDatabaseFiles();
     this.#database = database;
   }
 
@@ -416,14 +421,27 @@ export class LocalIndex {
       .prepare('SELECT id, encrypted_payload FROM pending_verifications')
       .all() as unknown as Array<{ id: number; encrypted_payload: string }>;
     const remove = this.#db().prepare('DELETE FROM pending_verifications WHERE id = ?');
+    const update = this.#db().prepare(
+      'UPDATE pending_verifications SET encrypted_payload = ? WHERE id = ?'
+    );
     for (const row of rows) {
       const pending = decryptJson<PendingVerification>(
         this.#key,
         row.encrypted_payload,
         `pending-verification:${row.id}`
       );
-      if (pending.affectedResourceIds.some((id) => resources.has(id))) {
+      const affectedResourceIds = pending.affectedResourceIds.filter((id) => !resources.has(id));
+      if (affectedResourceIds.length === 0) {
         remove.run(row.id);
+      } else if (affectedResourceIds.length !== pending.affectedResourceIds.length) {
+        update.run(
+          encryptJson(
+            this.#key,
+            { ...pending, affectedResourceIds },
+            `pending-verification:${row.id}`
+          ),
+          row.id
+        );
       }
     }
   }
@@ -703,5 +721,17 @@ export class LocalIndex {
       throw new Error('LocalIndex.initialize() must be called first');
     }
     return this.#database;
+  }
+
+  #secureDatabaseFiles(): void {
+    for (const path of [
+      this.#databasePath,
+      `${this.#databasePath}-wal`,
+      `${this.#databasePath}-shm`,
+    ]) {
+      if (existsSync(path)) {
+        chmodSync(path, 0o600);
+      }
+    }
   }
 }

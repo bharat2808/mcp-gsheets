@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CredentialBackend, CredentialVault } from '../../../src/auth/credential-vault.js';
 import { SetupServerOptions } from '../../../src/auth/setup-server.js';
+import { GoogleSheetsGateway } from '../../../src/google/google-api-client.js';
 import { LocalIndex } from '../../../src/storage/local-index.js';
 import { GSheetsRuntime } from '../../../src/runtime/gsheets-runtime.js';
+import { SyncService } from '../../../src/sync/sync-service.js';
 
 const CLIENT_ID = '123456789-runtime.apps.googleusercontent.com';
 const OTHER_CLIENT_ID = '987654321-other.apps.googleusercontent.com';
@@ -33,6 +35,31 @@ class MemoryBackend implements CredentialBackend {
 }
 
 const directories: string[] = [];
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function refreshResult(completedAt: string) {
+  return {
+    spreadsheetsDiscovered: 0,
+    spreadsheetsIndexed: 0,
+    sheetsIndexed: 0,
+    rowsIndexed: 0,
+    completedAt,
+    resources: [],
+  };
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  while (!predicate()) await Promise.resolve();
+}
 
 async function createRuntime() {
   const directory = await mkdtemp(join(tmpdir(), 'gsheets-runtime-'));
@@ -71,6 +98,180 @@ afterEach(async () => {
 });
 
 describe('GSheetsRuntime OAuth credential bootstrap', () => {
+  it('does not expose or persist a candidate connection before its first refresh completes', async () => {
+    const { runtime, directory, vault, getSetupOptions } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await runtime.initialize();
+    vi.spyOn(GoogleSheetsGateway.prototype, 'getAccountIdentity').mockResolvedValue('account-1');
+    const firstRefresh = deferred<ReturnType<typeof refreshResult>>();
+    const refresh = vi.spyOn(SyncService.prototype, 'refresh').mockReturnValue(firstRefresh.promise);
+    const candidateTokens = {
+      accessToken: 'candidate-access',
+      refreshToken: 'candidate-refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    };
+
+    const connecting = getSetupOptions()!.onConnected(candidateTokens);
+    await waitUntil(() => refresh.mock.calls.length === 1);
+
+    expect(runtime.status().connected).toBe(false);
+    expect(await vault.loadTokens()).toBeNull();
+    firstRefresh.resolve(refreshResult('2026-08-06T00:00:00.000Z'));
+    await connecting;
+    expect(runtime.status()).toMatchObject({ connected: true, refreshing: false });
+    expect(await vault.loadTokens()).toEqual(candidateTokens);
+    await runtime.close();
+  });
+
+  it('refreshes a new folder selection before exposing the committed selection', async () => {
+    const { runtime, directory, vault, getSetupOptions } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    vi.spyOn(GoogleSheetsGateway.prototype, 'getAccountIdentity').mockResolvedValue('account-1');
+    vi.spyOn(GoogleSheetsGateway.prototype, 'validateSelectedMyDriveFolder').mockResolvedValue();
+    const selectionRefresh = deferred<ReturnType<typeof refreshResult>>();
+    const refresh = vi
+      .spyOn(SyncService.prototype, 'refresh')
+      .mockResolvedValueOnce(refreshResult('2026-08-06T00:00:00.000Z'))
+      .mockReturnValueOnce(selectionRefresh.promise);
+    await runtime.initialize();
+
+    const selecting = getSetupOptions()!.setSelectedFolderIds(['new-folder']);
+    await waitUntil(() => refresh.mock.calls.length >= 2 || runtime.status().selectedFolderCount > 0);
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh.mock.calls[1]?.[0]).toEqual(['new-folder']);
+    expect(runtime.status().selectedFolderCount).toBe(0);
+    selectionRefresh.resolve(refreshResult('2026-08-06T00:01:00.000Z'));
+    await selecting;
+    expect(runtime.status().selectedFolderCount).toBe(1);
+    await runtime.close();
+  });
+
+  it('starts a distinct post-write refresh after an older refresh finishes', async () => {
+    const { runtime, directory, vault } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    vi.spyOn(GoogleSheetsGateway.prototype, 'getAccountIdentity').mockResolvedValue('account-1');
+    vi.spyOn(GoogleSheetsGateway.prototype, 'inspectOperation').mockResolvedValue({
+      affectedResources: [{ kind: 'spreadsheet', id: 'book', label: 'book' }],
+      preview: { kind: 'values', before: [], after: [['new']] },
+      riskInspection: { targetCellsVerifiedEmpty: true },
+      driveRevisions: { book: '1' },
+      state: {},
+    });
+    const verification = deferred<boolean>();
+    const verifyOperation = vi
+      .spyOn(GoogleSheetsGateway.prototype, 'verifyOperation')
+      .mockReturnValue(verification.promise);
+    const oldRefresh = deferred<ReturnType<typeof refreshResult>>();
+    const refresh = vi
+      .spyOn(SyncService.prototype, 'refresh')
+      .mockResolvedValueOnce(refreshResult('2026-08-06T00:00:00.000Z'))
+      .mockReturnValueOnce(oldRefresh.promise)
+      .mockResolvedValueOnce({
+        ...refreshResult('2026-08-06T00:02:00.000Z'),
+        resources: [{ spreadsheetId: 'book', status: 'indexed' as const }],
+      });
+    await runtime.initialize();
+
+    const manualRefresh = runtime.refresh();
+    await waitUntil(() => refresh.mock.calls.length === 2);
+    const execute = vi.fn().mockResolvedValue({ updatedRange: 'Plan!A1' });
+    const mutation = runtime.executeRetainedOperation(
+      'update_values',
+      execute,
+      { spreadsheetId: 'book', range: 'Plan!A1', values: [['new']] },
+      { idempotent: true, refreshIndex: true }
+    );
+    await waitUntil(() => execute.mock.calls.length === 1);
+    await waitUntil(() => verifyOperation.mock.calls.length === 1);
+    verification.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    oldRefresh.resolve(refreshResult('2026-08-06T00:01:00.000Z'));
+    await Promise.all([manualRefresh, mutation]);
+
+    expect(refresh).toHaveBeenCalledTimes(3);
+    await runtime.close();
+  });
+
+  it('clears pending verification only for spreadsheets confirmed by refresh', async () => {
+    const { runtime, directory, vault } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiryDate: 1_900_000_000_000,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    vi.spyOn(GoogleSheetsGateway.prototype, 'getAccountIdentity').mockResolvedValue('account-1');
+    vi.spyOn(SyncService.prototype, 'refresh')
+      .mockResolvedValueOnce(refreshResult('2026-08-06T00:00:00.000Z'))
+      .mockResolvedValueOnce({
+        ...refreshResult('2026-08-06T00:01:00.000Z'),
+        resources: [
+          { spreadsheetId: 'book-1', status: 'current' as const },
+          { spreadsheetId: 'book-2', status: 'failed' as const, error: 'unavailable' },
+        ],
+      });
+    await runtime.initialize();
+    const index = new LocalIndex(
+      join(directory, 'index.sqlite'),
+      await vault.getOrCreateDataKey()
+    );
+    index.initialize();
+    index.recordPendingVerification({
+      operation: 'batch_update_values',
+      recordedAt: '2026-08-06T00:00:30.000Z',
+      affectedResourceIds: ['spreadsheet:book-1', 'spreadsheet:book-2'],
+      error: 'partial verification',
+    });
+
+    await runtime.refresh();
+
+    expect(index.getPendingVerifications()).toEqual([
+      expect.objectContaining({ affectedResourceIds: ['spreadsheet:book-2'] }),
+    ]);
+    index.close();
+    await runtime.close();
+  });
+
   it('removes persisted folder selections that are not owned and root-reachable before refresh', async () => {
     const { runtime, directory, vault, getSetupOptions } = await createRuntime();
     await writeFile(
@@ -284,7 +485,9 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
       );
     });
     vi.stubGlobal('fetch', fetcher);
-    const refresh = vi.spyOn(runtime, 'refresh').mockResolvedValue({} as any);
+    const refresh = vi
+      .spyOn(SyncService.prototype, 'refresh')
+      .mockResolvedValue(refreshResult('2026-08-06T00:00:00.000Z'));
     await runtime.initialize();
     fetcher.mockReset();
     fetcher
@@ -432,8 +635,9 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     index.close();
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        new Response(
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(
           JSON.stringify({
             user: { permissionId: 'new-account' },
             files: [
@@ -452,8 +656,8 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
               },
             ],
           }),
-          { status: 200 }
-        )
+            { status: 200 }
+          )
       )
     );
 
@@ -689,6 +893,54 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     await runtime.close();
   });
 
+  it('does not let an older token-refresh callback recreate credentials after sign-out', async () => {
+    const { runtime, directory, vault } = await createRuntime();
+    await writeFile(
+      join(directory, 'config.json'),
+      JSON.stringify({ googleOAuthClientId: CLIENT_ID }),
+      { mode: 0o600 }
+    );
+    await vault.saveClientSecret('GOCSPX-secret');
+    await vault.saveTokens({
+      accessToken: 'expired-access',
+      refreshToken: 'refresh',
+      expiryDate: 0,
+      scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+      tokenType: 'Bearer',
+    });
+    let client: GoogleSheetsGateway | null = null;
+    vi.spyOn(GoogleSheetsGateway.prototype, 'getAccountIdentity').mockImplementation(function () {
+      client = this;
+      return Promise.resolve('account-1');
+    });
+    vi.spyOn(GoogleSheetsGateway.prototype, 'authorizeSpreadsheet').mockResolvedValue();
+    vi.spyOn(SyncService.prototype, 'refresh').mockResolvedValue(
+      refreshResult('2026-08-06T00:00:00.000Z')
+    );
+    const tokenResponse = deferred<Response>();
+    const fetcher = vi.fn(async (input: URL | RequestInfo) => {
+      if (String(input).includes('/token')) return tokenResponse.promise;
+      return new Response(JSON.stringify({ version: '8' }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    await runtime.initialize();
+
+    const revision = client!.getRevision('book');
+    await waitUntil(() => fetcher.mock.calls.some(([input]) => String(input).includes('/token')));
+    await runtime.signOut();
+    tokenResponse.resolve(
+      new Response(
+        JSON.stringify({ access_token: 'late-access', expires_in: 3600, token_type: 'Bearer' }),
+        { status: 200 }
+      )
+    );
+
+    await expect(revision).resolves.toBe('8');
+    expect(await vault.loadTokens()).toBeNull();
+    expect(runtime.status().connected).toBe(false);
+    await runtime.close();
+  });
+
   it('finalizes approved sign-out without recreating cleared audit or pending rows', async () => {
     const { runtime, directory, vault } = await createRuntime();
     await writeFile(
@@ -706,10 +958,11 @@ describe('GSheetsRuntime OAuth credential bootstrap', () => {
     });
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ user: { permissionId: 'account-1' }, files: [] }), {
-          status: 200,
-        })
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ user: { permissionId: 'account-1' }, files: [] }), {
+            status: 200,
+          })
       )
     );
     await runtime.initialize();

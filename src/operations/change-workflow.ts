@@ -61,10 +61,20 @@ export interface ChangeWorkflowDependencies {
   now?: () => number;
 }
 
+export interface ChangeRefreshResult {
+  refreshedResourceIds: string[];
+  removedResourceIds: string[];
+  failedResourceIds: string[];
+  errors?: Record<string, string>;
+}
+
 export interface ExecuteChangeInput {
   operation: string;
   arguments: Record<string, unknown>;
-  execute: (arguments_: Record<string, unknown>) => Promise<unknown>;
+  execute: (
+    arguments_: Record<string, unknown>,
+    context: { approval: 'direct' | 'reviewed' }
+  ) => Promise<unknown>;
   refresh?: boolean;
   preflight?: OperationPreflight;
   persistOutcome?: boolean;
@@ -113,7 +123,12 @@ export class ChangeWorkflow {
         apply: (proposal, markApplicationOccurred) =>
           this.#applyApproved(proposal, markApplicationOccurred),
       },
-      this.#now
+      this.#now,
+      (proposalIds) => {
+        for (const proposalId of proposalIds) {
+          this.#executors.delete(proposalId);
+        }
+      }
     );
   }
 
@@ -251,7 +266,7 @@ export class ChangeWorkflow {
     verificationState: ChangeApplicationResult['verificationState'];
     verificationError?: string;
   }> {
-    const data = await execute(structuredClone(arguments_));
+    const data = await execute(structuredClone(arguments_), { approval });
     onApplicationOccurred?.(data);
     if (
       preflight.affectedResources.length === 0 &&
@@ -267,24 +282,60 @@ export class ChangeWorkflow {
       });
     }
     const errors: string[] = [];
+    const ids = resourceIds(preflight.affectedResources);
+    const pendingIds = new Set<string>();
+    const clearIds = new Set<string>();
+    let verified = false;
     try {
-      if (!(await this.#gateway.verify(operation, arguments_, data, preflight))) {
+      verified = await this.#gateway.verify(operation, arguments_, data, preflight);
+      if (!verified) {
         errors.push('Google state did not match the requested change');
+        ids.forEach((id) => pendingIds.add(id));
       }
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
+      ids.forEach((id) => pendingIds.add(id));
     }
     if (refresh) {
       try {
-        await this.#refresh(preflight.affectedResources);
+        const refreshResult = await this.#refresh(preflight.affectedResources);
+        if (this.#isChangeRefreshResult(refreshResult)) {
+          for (const id of refreshResult.failedResourceIds) {
+            if (ids.includes(id)) {
+              pendingIds.add(id);
+            }
+          }
+          if (verified) {
+            for (const id of [
+              ...refreshResult.refreshedResourceIds,
+              ...refreshResult.removedResourceIds,
+            ]) {
+              if (ids.includes(id)) {
+                clearIds.add(id);
+              }
+            }
+          }
+          const refreshErrors = Object.values(refreshResult.errors ?? {});
+          if (refreshResult.failedResourceIds.length > 0) {
+            errors.push(
+              `Index refresh failed: ${refreshErrors.join('; ') || refreshResult.failedResourceIds.join(', ')}`
+            );
+          }
+        } else if (verified) {
+          ids.forEach((id) => clearIds.add(id));
+        }
       } catch (error) {
         errors.push(
           `Index refresh failed: ${error instanceof Error ? error.message : String(error)}`
         );
+        ids.forEach((id) => pendingIds.add(id));
       }
+    } else if (verified) {
+      ids.forEach((id) => clearIds.add(id));
     }
-
-    const ids = resourceIds(preflight.affectedResources);
+    for (const id of pendingIds) {
+      clearIds.delete(id);
+    }
     const appliedAt = new Date(this.#now()).toISOString();
     const audit: WriteAudit = {
       ...(proposal ? { proposalId: proposal.id } : {}),
@@ -301,16 +352,20 @@ export class ChangeWorkflow {
     };
     if (persistOutcome) {
       try {
-        this.#persistOutcome(audit, operation, ids, errors);
+        this.#persistOutcome(audit, operation, [...clearIds], [...pendingIds], errors);
       } catch (error) {
         errors.push(
           `Bookkeeping failed: ${error instanceof Error ? error.message : String(error)}`
         );
+        ids.forEach((id) => {
+          clearIds.delete(id);
+          pendingIds.add(id);
+        });
         try {
           this.#auditStore.recordPendingVerification({
             operation,
             recordedAt: appliedAt,
-            affectedResourceIds: ids,
+            affectedResourceIds: [...pendingIds],
             error: errors.join('; '),
           });
         } catch (pendingError) {
@@ -322,14 +377,11 @@ export class ChangeWorkflow {
     }
     const verificationState = errors.length === 0 ? 'verified' : 'applied_verification_pending';
     const verificationError = errors.join('; ');
-    if (verificationState === 'verified') {
-      for (const id of ids) {
-        this.#pendingFallback.delete(id);
-      }
-    } else {
-      for (const id of ids) {
-        this.#pendingFallback.add(id);
-      }
+    for (const id of clearIds) {
+      this.#pendingFallback.delete(id);
+    }
+    for (const id of pendingIds) {
+      this.#pendingFallback.add(id);
     }
     return {
       data,
@@ -348,13 +400,19 @@ export class ChangeWorkflow {
     }
   }
 
-  #persistOutcome(audit: WriteAudit, operation: string, ids: string[], errors: string[]): void {
+  #persistOutcome(
+    audit: WriteAudit,
+    operation: string,
+    clearIds: string[],
+    pendingIds: string[],
+    errors: string[]
+  ): void {
     const pending =
-      errors.length > 0
+      pendingIds.length > 0
         ? {
             operation,
             recordedAt: audit.appliedAt,
-            affectedResourceIds: ids,
+            affectedResourceIds: pendingIds,
             error: errors.join('; '),
           }
         : undefined;
@@ -366,16 +424,30 @@ export class ChangeWorkflow {
     if (this.#auditStore.recordWriteOutcome) {
       this.#auditStore.recordWriteOutcome({
         audit: finalizedAudit,
-        ...(pending ? { pending } : { clearResourceIds: ids }),
+        ...(pending ? { pending } : {}),
+        ...(clearIds.length > 0 ? { clearResourceIds: clearIds } : {}),
       });
       return;
     }
     if (pending) {
       this.#auditStore.recordPendingVerification(pending);
-    } else {
-      this.#auditStore.clearPendingVerifications(ids);
+    }
+    if (clearIds.length > 0) {
+      this.#auditStore.clearPendingVerifications(clearIds);
     }
     this.#auditStore.recordWriteAudit(finalizedAudit);
+  }
+
+  #isChangeRefreshResult(value: unknown): value is ChangeRefreshResult {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    const candidate = value as Partial<ChangeRefreshResult>;
+    return (
+      Array.isArray(candidate.refreshedResourceIds) &&
+      Array.isArray(candidate.removedResourceIds) &&
+      Array.isArray(candidate.failedResourceIds)
+    );
   }
 
   #hasPendingVerification(operation: string, ids: readonly string[]): boolean {

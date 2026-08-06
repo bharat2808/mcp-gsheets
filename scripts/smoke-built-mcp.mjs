@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 import { createSmokeChildEnvironment } from './smoke-child-environment.mjs';
+import { argumentsFromInputSchema } from './smoke-schema-arguments.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const categoryNames = {
@@ -172,11 +173,16 @@ try {
     assert.deepEqual(sorted(tools.map((tool) => tool.name)), allNames);
     const invoked = [];
     for (const tool of tools) {
-      try {
-        await client.callTool({ name: tool.name, arguments: {} });
-      } catch (error) {
-        assert.ok(error instanceof Error, `Expected ${tool.name} schema rejection to be an Error`);
-      }
+      const arguments_ = argumentsFromInputSchema(tool.inputSchema);
+      const response = await client.callTool({ name: tool.name, arguments: arguments_ });
+      const output = response.content
+        .flatMap((entry) => (entry.type === 'text' ? [entry.text] : []))
+        .join('\n');
+      assert.doesNotMatch(
+        output,
+        /invalid (?:tool )?arguments|validation error|invalid_type/iu,
+        `${tool.name} rejected schema-derived smoke arguments: ${JSON.stringify(arguments_)}`
+      );
       invoked.push(tool.name);
     }
     assert.deepEqual(sorted(invoked), allNames);
@@ -193,7 +199,7 @@ try {
   );
 
   console.log(
-    `Built MCP validated default, seven categories, all, read-only, and schema invocation for ${allNames.length} operations.`
+    `Built MCP validated default, seven categories, all, read-only, and schema-accepted invocation for ${allNames.length} operations.`
   );
 } finally {
   const { Entry } = await import('@napi-rs/keyring');

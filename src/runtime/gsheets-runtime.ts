@@ -39,6 +39,7 @@ import {
 import {
   ChangeWorkflow,
   ChangeWorkflowOutcome,
+  ChangeRefreshResult,
   OperationPreflight,
 } from '../operations/change-workflow.js';
 import { LocalIndex } from '../storage/local-index.js';
@@ -81,6 +82,9 @@ export class GSheetsRuntime {
   #lastError: string | null = null;
   #refreshPromise: Promise<RefreshResult> | null = null;
   #missingScopes: string[] = [];
+  #lifecycleTail: Promise<void> = Promise.resolve();
+  #connectionGeneration = 0;
+  #selectedFolderOverride: readonly string[] | null = null;
 
   constructor(options: GSheetsRuntimeOptions = {}) {
     this.#environment = options.environment ?? process.env;
@@ -183,10 +187,13 @@ export class GSheetsRuntime {
     input: any,
     policy: { idempotent: boolean; refreshIndex: boolean }
   ): Promise<T | ChangeProposal | Record<string, unknown>> {
-    const execute = async (arguments_: Record<string, unknown>) => {
+    const execute = async (
+      arguments_: Record<string, unknown>,
+      context: { approval: 'direct' | 'reviewed' }
+    ) => {
       const response = await runWithGoogleSheetsGateway(
         this.#requiredClient(),
-        { idempotent: policy.idempotent },
+        { idempotent: context.approval === 'direct' && policy.idempotent },
         async () => handler(arguments_)
       );
       if (this.#isErrorToolResponse(response)) {
@@ -195,7 +202,7 @@ export class GSheetsRuntime {
       return response;
     };
     if (!policy.refreshIndex) {
-      return execute(input);
+      return execute(input, { approval: 'direct' });
     }
     return this.#outcome(
       await this.#requiredWorkflow().execute({ operation, arguments: input, execute })
@@ -207,10 +214,12 @@ export class GSheetsRuntime {
       await this.#requiredWorkflow().execute({
         operation: 'create_spreadsheet',
         arguments: input as unknown as Record<string, unknown>,
-        execute: (arguments_) =>
-          this.#requiredClient().createSpreadsheet(
-            arguments_ as unknown as CreateSpreadsheetGatewayInput,
-            this.#requiredIndex().getSelectedFolderIds()
+        execute: (arguments_, context) =>
+          this.#withGatewayExecutionPolicy(context, false, () =>
+            this.#requiredClient().createSpreadsheet(
+              arguments_ as unknown as CreateSpreadsheetGatewayInput,
+              this.#requiredIndex().getSelectedFolderIds()
+            )
           ),
       })
     );
@@ -221,8 +230,10 @@ export class GSheetsRuntime {
       await this.#requiredWorkflow().execute({
         operation: 'insert_columns',
         arguments: input as unknown as Record<string, unknown>,
-        execute: (arguments_) =>
-          this.#requiredClient().insertColumns(arguments_ as unknown as InsertColumnsGatewayInput),
+        execute: (arguments_, context) =>
+          this.#withGatewayExecutionPolicy(context, false, () =>
+            this.#requiredClient().insertColumns(arguments_ as unknown as InsertColumnsGatewayInput)
+          ),
       })
     );
   }
@@ -232,14 +243,16 @@ export class GSheetsRuntime {
       await this.#requiredWorkflow().execute({
         operation: 'move_spreadsheet',
         arguments: input,
-        execute: (arguments_) => {
+        execute: (arguments_, context) => {
           const selectedFolderIds = this.#requiredIndex().getSelectedFolderIds();
           const folderId = String(arguments_.folderId);
-          return this.#requiredClient().moveSpreadsheet(
-            String(arguments_.spreadsheetId),
-            folderId,
-            selectedFolderIds,
-            !selectedFolderIds.includes(folderId)
+          return this.#withGatewayExecutionPolicy(context, false, () =>
+            this.#requiredClient().moveSpreadsheet(
+              String(arguments_.spreadsheetId),
+              folderId,
+              selectedFolderIds,
+              !selectedFolderIds.includes(folderId)
+            )
           );
         },
       })
@@ -273,25 +286,31 @@ export class GSheetsRuntime {
   async signOut(
     options: { revokeGoogleGrant?: boolean } = {}
   ): Promise<{ signedOut: true; grantRevoked: boolean }> {
-    if (this.#refreshPromise) {
-      await this.#refreshPromise.catch(() => undefined);
-    }
-    try {
-      if (options.revokeGoogleGrant === true) {
-        await this.#requiredClient().revokeGoogleGrant();
+    return this.#withLifecycle(async () => {
+      const priorGeneration = this.#connectionGeneration;
+      let tokensDeleted = false;
+      try {
+        if (options.revokeGoogleGrant === true) {
+          await this.#requiredClient().revokeGoogleGrant();
+        }
+        this.#connectionGeneration += 1;
+        await this.#vault.deleteTokens();
+        tokensDeleted = true;
+        this.#requiredIndex().clearAccountData();
+      } catch (error) {
+        if (!tokensDeleted) {
+          this.#connectionGeneration = priorGeneration;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        this.#lastError = `Sign-out incomplete: ${message}`;
+        throw error;
       }
-      await this.#vault.deleteTokens();
-      this.#requiredIndex().clearAccountData();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.#lastError = `Sign-out incomplete: ${message}`;
-      throw error;
-    }
-    this.#disconnect();
-    this.#missingScopes = [];
-    this.#lastRefresh = null;
-    this.#lastError = 'Signed out. Reconnect from the local setup URL.';
-    return { signedOut: true, grantRevoked: options.revokeGoogleGrant === true };
+      this.#disconnect();
+      this.#missingScopes = [];
+      this.#lastRefresh = null;
+      this.#lastError = 'Signed out. Reconnect from the local setup URL.';
+      return { signedOut: true, grantRevoked: options.revokeGoogleGrant === true };
+    });
   }
 
   async prepareSignOut(input: { revokeGoogleGrant?: boolean } = {}) {
@@ -342,25 +361,7 @@ export class GSheetsRuntime {
   }
 
   async refresh(): Promise<RefreshResult> {
-    if (!this.#sync) {
-      throw new Error(this.#lastError ?? 'Connect Google first');
-    }
-    if (this.#refreshPromise) {
-      return this.#refreshPromise;
-    }
-    this.#refreshPromise = this.#sync.refresh(this.#requiredIndex().getSelectedFolderIds());
-    try {
-      this.#lastRefresh = await this.#refreshPromise;
-      this.#requiredIndex().clearPendingVerifications();
-      this.#workflow?.clearPendingVerificationBlocks();
-      this.#lastError = null;
-      return this.#lastRefresh;
-    } catch (error) {
-      this.#lastError = error instanceof Error ? error.message : String(error);
-      throw error;
-    } finally {
-      this.#refreshPromise = null;
-    }
+    return this.#startRefresh(false);
   }
 
   async prepare(input: PrepareChangeInput): Promise<ChangeProposal> {
@@ -482,11 +483,13 @@ export class GSheetsRuntime {
       operation: 'prepare_row_change',
       arguments: arguments_,
       preflight,
-      execute: async (editedArguments) =>
-        client.applyRow({
-          ...rowRequest,
-          values: editedArguments.values as Record<string, CellValue>,
-        }),
+      execute: async (editedArguments, context) =>
+        this.#withGatewayExecutionPolicy(context, false, () =>
+          client.applyRow({
+            ...rowRequest,
+            values: editedArguments.values as Record<string, CellValue>,
+          })
+        ),
     });
     if (outcome.kind !== 'proposal') {
       throw new Error('Row changes must always produce a reviewed proposal');
@@ -521,6 +524,10 @@ export class GSheetsRuntime {
   }
 
   async #connect(tokens: OAuthTokenSet): Promise<void> {
+    return this.#withLifecycle(() => this.#connectLocked(tokens));
+  }
+
+  async #connectLocked(tokens: OAuthTokenSet): Promise<void> {
     if (!this.#clientId || !this.#clientSecret) {
       throw new Error('Google OAuth client credentials are not configured');
     }
@@ -528,21 +535,28 @@ export class GSheetsRuntime {
     if (missingScopes.length > 0) {
       throw new Error(`Google token is missing required OAuth scopes: ${missingScopes.join(', ')}`);
     }
+    const candidateConnectionGeneration = this.#connectionGeneration + 1;
     let stagedTokens = tokens;
     let tokensCommitted = false;
+    let candidateSelectedFolderIds = this.#requiredIndex().getSelectedFolderIds();
     const client = new GoogleSheetsGateway(
       tokens,
       this.#clientId,
       this.#clientSecret,
       async (next) => {
         stagedTokens = next;
-        if (tokensCommitted) {
+        if (tokensCommitted && candidateConnectionGeneration === this.#connectionGeneration) {
           await this.#vault.saveTokens(next);
         }
       },
       fetch,
       Date.now,
-      { getSelectedFolderIds: () => this.#requiredIndex().getSelectedFolderIds() }
+      {
+        getSelectedFolderIds: () =>
+          tokensCommitted
+            ? (this.#selectedFolderOverride ?? this.#requiredIndex().getSelectedFolderIds())
+            : candidateSelectedFolderIds,
+      }
     );
     const accountIdentity = await client.getAccountIdentity();
     const index = this.#requiredIndex();
@@ -554,6 +568,9 @@ export class GSheetsRuntime {
         ? new Set((await client.listSelectableMyDriveFolders()).map((folder) => folder.id))
         : new Set<string>();
     const retainedFolderIds = selectedFolderIds.filter((folderId) => selectableIds.has(folderId));
+    candidateSelectedFolderIds = retainedFolderIds;
+    const sync = new SyncService(index, client, client);
+    const refreshResult = await sync.refresh(retainedFolderIds);
     const previousTokens = await this.#vault.loadTokens();
     try {
       await this.#vault.saveTokens(stagedTokens);
@@ -570,10 +587,11 @@ export class GSheetsRuntime {
       throw error;
     }
     tokensCommitted = true;
+    this.#connectionGeneration = candidateConnectionGeneration;
     this.#disconnect();
     this.#missingScopes = [];
     this.#client = client;
-    this.#sync = new SyncService(this.#requiredIndex(), this.#client, this.#client);
+    this.#sync = sync;
     this.#workflow = new ChangeWorkflow({
       gateway: {
         inspect: (operation, arguments_) =>
@@ -630,27 +648,13 @@ export class GSheetsRuntime {
               )
             );
           }
-          if (operation === 'create_spreadsheet') {
-            return Promise.resolve(
-              Boolean(
-                result &&
-                typeof result === 'object' &&
-                typeof (result as { spreadsheetId?: unknown }).spreadsheetId === 'string' &&
-                (result as { partialCreation?: unknown }).partialCreation !== true
-              )
-            );
-          }
-          return client.verifyOperation(operation, arguments_, preflight);
+          return client.verifyOperation(operation, arguments_, result, preflight);
         },
       },
       auditStore: this.#requiredIndex(),
-      refresh: async () => this.refresh(),
+      refresh: (affectedResources) => this.#refreshAfterWrite(affectedResources),
     });
-    try {
-      await this.refresh();
-    } catch (error) {
-      this.#lastError = error instanceof Error ? error.message : String(error);
-    }
+    this.#applyRefreshResult(refreshResult);
     if (!this.#poller) {
       this.#poller = setInterval(
         () =>
@@ -686,6 +690,13 @@ export class GSheetsRuntime {
   }
 
   async #saveClientCredentials(credentials: {
+    clientId: string;
+    clientSecret: string;
+  }): Promise<void> {
+    return this.#withLifecycle(() => this.#saveClientCredentialsLocked(credentials));
+  }
+
+  async #saveClientCredentialsLocked(credentials: {
     clientId: string;
     clientSecret: string;
   }): Promise<void> {
@@ -728,9 +739,7 @@ export class GSheetsRuntime {
     }
 
     if (replacement) {
-      if (this.#refreshPromise) {
-        await this.#refreshPromise.catch(() => undefined);
-      }
+      this.#connectionGeneration += 1;
       this.#disconnect();
       await this.#vault.deleteTokens();
       this.#lastRefresh = null;
@@ -746,12 +755,24 @@ export class GSheetsRuntime {
   }
 
   async #setSelectedFolderIds(ids: string[]): Promise<void> {
+    return this.#withLifecycle(() => this.#setSelectedFolderIdsLocked(ids));
+  }
+
+  async #setSelectedFolderIdsLocked(ids: string[]): Promise<void> {
     const uniqueIds = [...new Set(ids)];
     const client = this.#requiredClient();
     for (const folderId of uniqueIds) {
       await client.validateSelectedMyDriveFolder(folderId, uniqueIds);
     }
+    this.#selectedFolderOverride = uniqueIds;
+    let refreshResult: RefreshResult;
+    try {
+      refreshResult = await this.#requiredSync().refresh(uniqueIds);
+    } finally {
+      this.#selectedFolderOverride = null;
+    }
     this.#requiredIndex().setSelectedFolderIds(uniqueIds);
+    this.#applyRefreshResult(refreshResult);
   }
 
   #signOutPreviewBefore(revokeGoogleGrant: boolean) {
@@ -773,6 +794,132 @@ export class GSheetsRuntime {
     this.#client = null;
     this.#sync = null;
     this.#workflow = null;
+  }
+
+  #requiredSync(): SyncService {
+    if (!this.#sync) {
+      throw new Error(this.#lastError ?? 'Connect Google first');
+    }
+    return this.#sync;
+  }
+
+  #withLifecycle<T>(action: () => Promise<T>): Promise<T> {
+    const previous = this.#lifecycleTail;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#lifecycleTail = previous.catch(() => undefined).then(() => gate);
+    return previous
+      .catch(() => undefined)
+      .then(action)
+      .finally(release);
+  }
+
+  #startRefresh(forceAfterCurrent: boolean): Promise<RefreshResult> {
+    if (!forceAfterCurrent && this.#refreshPromise) {
+      return this.#refreshPromise;
+    }
+    const previousRefresh = forceAfterCurrent ? this.#refreshPromise : null;
+    const refreshPromise = (async () => {
+      if (previousRefresh) {
+        await previousRefresh.catch(() => undefined);
+      }
+      return this.#withLifecycle(async () => {
+        try {
+          const result = await this.#requiredSync().refresh(
+            this.#requiredIndex().getSelectedFolderIds()
+          );
+          this.#applyRefreshResult(result);
+          return result;
+        } catch (error) {
+          this.#lastError = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
+      });
+    })();
+    this.#refreshPromise = refreshPromise;
+    void refreshPromise
+      .finally(() => {
+        if (this.#refreshPromise === refreshPromise) {
+          this.#refreshPromise = null;
+        }
+      })
+      .catch(() => undefined);
+    return refreshPromise;
+  }
+
+  async #refreshAfterWrite(
+    affectedResources: readonly AffectedResource[]
+  ): Promise<ChangeRefreshResult> {
+    const result = await this.#startRefresh(true);
+    return this.#refreshResultForAffectedResources(result, affectedResources);
+  }
+
+  #refreshResultForAffectedResources(
+    result: RefreshResult,
+    affectedResources: readonly AffectedResource[]
+  ): ChangeRefreshResult {
+    const bySpreadsheetId = new Map(
+      result.resources.map((resource) => [resource.spreadsheetId, resource] as const)
+    );
+    const refreshedResourceIds: string[] = [];
+    const removedResourceIds: string[] = [];
+    const failedResourceIds: string[] = [];
+    const errors: Record<string, string> = {};
+    for (const resource of affectedResources) {
+      const resourceId = `${resource.kind}:${resource.id}`;
+      const spreadsheetId = this.#spreadsheetIdForResource(resource);
+      const outcome = spreadsheetId ? bySpreadsheetId.get(spreadsheetId) : undefined;
+      if (!outcome || outcome.status === 'failed') {
+        failedResourceIds.push(resourceId);
+        errors[resourceId] =
+          outcome?.status === 'failed' ? outcome.error : 'Affected spreadsheet was not refreshed';
+      } else if (outcome.status === 'removed') {
+        removedResourceIds.push(resourceId);
+      } else {
+        refreshedResourceIds.push(resourceId);
+      }
+    }
+    return { refreshedResourceIds, removedResourceIds, failedResourceIds, errors };
+  }
+
+  #spreadsheetIdForResource(resource: AffectedResource): string | null {
+    if (resource.kind === 'spreadsheet') {
+      return resource.id;
+    }
+    if (resource.kind === 'account') {
+      return null;
+    }
+    return resource.id.split(':')[0] ?? null;
+  }
+
+  #applyRefreshResult(result: RefreshResult): void {
+    this.#lastRefresh = result;
+    const failed = result.resources.filter((resource) => resource.status === 'failed');
+    const successfulSpreadsheetIds = new Set(
+      result.resources
+        .filter((resource) => resource.status !== 'failed')
+        .map((resource) => resource.spreadsheetId)
+    );
+    const clearIds = this.#requiredIndex()
+      .getPendingVerifications()
+      .flatMap((pending) => pending.affectedResourceIds)
+      .filter((resourceId) => {
+        const separator = resourceId.indexOf(':');
+        const kind = resourceId.slice(0, separator);
+        const id = resourceId.slice(separator + 1);
+        const spreadsheetId = kind === 'spreadsheet' ? id : id.split(':')[0];
+        return Boolean(spreadsheetId && successfulSpreadsheetIds.has(spreadsheetId));
+      });
+    if (clearIds.length > 0) {
+      this.#requiredIndex().clearPendingVerifications(clearIds);
+      this.#workflow?.clearPendingVerificationBlocks(clearIds);
+    }
+    this.#lastError =
+      failed.length > 0
+        ? `Index refresh failed for ${failed.map((resource) => resource.spreadsheetId).join(', ')}`
+        : null;
   }
 
   #configPath(): string {
@@ -809,7 +956,8 @@ export class GSheetsRuntime {
       await this.#requiredWorkflow().execute({
         operation,
         arguments: input,
-        execute: (arguments_) => execute(arguments_ as T),
+        execute: (arguments_, context) =>
+          this.#withGatewayExecutionPolicy(context, true, () => execute(arguments_ as T)),
       })
     );
   }
@@ -826,5 +974,17 @@ export class GSheetsRuntime {
       };
     }
     return outcome;
+  }
+
+  #withGatewayExecutionPolicy<T>(
+    context: { approval: 'direct' | 'reviewed' },
+    directIdempotent: boolean,
+    execute: () => Promise<T>
+  ): Promise<T> {
+    return runWithGoogleSheetsGateway(
+      this.#requiredClient(),
+      { idempotent: context.approval === 'direct' && directIdempotent },
+      execute
+    );
   }
 }

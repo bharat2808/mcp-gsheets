@@ -8,6 +8,7 @@ import { extractOperationResources, spreadsheetResourceIds } from '../operations
 import { RowChangeRequest } from '../proposals/proposal-manager.js';
 import { SheetsReadGateway } from '../sync/sync-service.js';
 import { extractSheetName, parseRange } from '../utils/range-helpers.js';
+import { currentGoogleSheetsGatewayPolicy } from '../utils/google-auth.js';
 
 type TokenSaver = (tokens: OAuthTokenSet) => Promise<void>;
 
@@ -158,6 +159,24 @@ function operationRanges(operation: string, arguments_: Record<string, unknown>)
         })
       : [];
   }
+  if (operation === 'batch_format_cells') {
+    return Array.isArray(arguments_.formatRequests)
+      ? arguments_.formatRequests.flatMap((entry) => {
+          const range = (entry as { range?: unknown }).range;
+          return typeof range === 'string' ? [range] : [];
+        })
+      : [];
+  }
+  if (operation === 'add_conditional_formatting') {
+    return Array.isArray(arguments_.rules)
+      ? arguments_.rules.flatMap((entry) => {
+          const ranges = (entry as { ranges?: unknown }).ranges;
+          return Array.isArray(ranges)
+            ? ranges.filter((range): range is string => typeof range === 'string')
+            : [];
+        })
+      : [];
+  }
   if (typeof arguments_.range !== 'string') {
     return [];
   }
@@ -190,18 +209,165 @@ function normalizedValues(values: unknown): unknown[][] {
   return rows;
 }
 
-const EXACT_METADATA_OPERATIONS = new Set([
+function partialMatch(actual: unknown, expected: unknown): boolean {
+  if (Array.isArray(expected)) {
+    return (
+      Array.isArray(actual) &&
+      actual.length >= expected.length &&
+      expected.every((value, index) => partialMatch(actual[index], value))
+    );
+  }
+  if (expected && typeof expected === 'object') {
+    if (!actual || typeof actual !== 'object') {
+      return false;
+    }
+    return Object.entries(expected).every(([key, value]) =>
+      partialMatch((actual as Record<string, unknown>)[key], value)
+    );
+  }
+  return Object.is(actual ?? null, expected ?? null);
+}
+
+function toolResponseText(result: unknown): string {
+  if (!result || typeof result !== 'object') {
+    return '';
+  }
+  const content = (result as { content?: Array<{ text?: unknown }> }).content ?? [];
+  return content
+    .flatMap((entry) => (typeof entry.text === 'string' ? [entry.text] : []))
+    .join('\n');
+}
+
+function toolResponseData(result: unknown): Record<string, unknown> | null {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+  const structured = (result as { structuredContent?: { data?: unknown } }).structuredContent?.data;
+  if (structured && typeof structured === 'object' && !Array.isArray(structured)) {
+    return structured as Record<string, unknown>;
+  }
+  const text = toolResponseText(result);
+  const start = text.indexOf('{');
+  if (start < 0) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text.slice(start));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function metadataSheets(metadata: unknown): any[] {
+  return (metadata as { sheets?: any[] } | undefined)?.sheets ?? [];
+}
+
+function metadataCells(metadata: unknown): any[] {
+  return metadataSheets(metadata).flatMap((sheet) =>
+    (sheet.data ?? []).flatMap((data: any) =>
+      (Array.isArray(data.rowData) ? data.rowData : data.rowData ? [data.rowData] : []).flatMap(
+        (row: any) => row.values ?? []
+      )
+    )
+  );
+}
+
+function metadataCharts(metadata: unknown): any[] {
+  return metadataSheets(metadata).flatMap((sheet) => sheet.charts ?? []);
+}
+
+function metadataTables(metadata: unknown): any[] {
+  return metadataSheets(metadata).flatMap((sheet) => sheet.tables ?? []);
+}
+
+function sheetForArguments(metadata: unknown, arguments_: Record<string, unknown>): any {
+  const sheets = metadataSheets(metadata);
+  if (typeof arguments_.sheetId === 'number') {
+    return sheets.find((sheet) => sheet.properties?.sheetId === arguments_.sheetId);
+  }
+  if (typeof arguments_.range === 'string') {
+    const { sheetName } = extractSheetName(arguments_.range);
+    if (sheetName) {
+      return sheets.find((sheet) => sheet.properties?.title === sheetName);
+    }
+  }
+  return sheets[0];
+}
+
+function exactGridRange(metadata: unknown, a1Range: string): unknown {
+  const { sheetName, range } = extractSheetName(a1Range);
+  const sheet = sheetName
+    ? metadataSheets(metadata).find((candidate) => candidate.properties?.title === sheetName)
+    : metadataSheets(metadata)[0];
+  const sheetId = sheet?.properties?.sheetId;
+  if (typeof sheetId !== 'number') {
+    return null;
+  }
+  return parseRange(range, sheetId);
+}
+
+function rangeSize(value: string, dimension: 'ROWS' | 'COLUMNS'): number | null {
+  const { range } = extractSheetName(value);
+  const match =
+    dimension === 'ROWS' ? /^(\d+):(\d+)$/u.exec(range) : /^([A-Z]+):([A-Z]+)$/iu.exec(range);
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  if (dimension === 'ROWS') {
+    return Number(match[2]) - Number(match[1]) + 1;
+  }
+  const toIndex = (column: string) =>
+    [...column.toUpperCase()].reduce(
+      (total, character) => total * 26 + character.charCodeAt(0) - 64,
+      0
+    );
+  return toIndex(match[2]) - toIndex(match[1]) + 1;
+}
+
+function appendPreflightEvidence(
+  valueRange: { range: string; values: unknown[][] } | undefined
+): { range: string; headers: unknown[]; tail: unknown[][]; lastRowNumber: number } | null {
+  if (!valueRange) {
+    return null;
+  }
+  const { range } = extractSheetName(valueRange.range);
+  const firstRow = /[A-Z]+(\d+)/iu.exec(range)?.[1];
+  const startRow = firstRow ? Number(firstRow) : 1;
+  return {
+    range: valueRange.range,
+    headers: valueRange.values[0] ?? [],
+    tail: valueRange.values.slice(-3),
+    lastRowNumber: Math.max(startRow - 1, startRow + valueRange.values.length - 1),
+  };
+}
+
+const METADATA_STATE_OPERATIONS = new Set([
+  'insert_sheet',
+  'duplicate_sheet',
   'delete_sheet',
   'batch_delete_sheets',
+  'insert_rows',
   'delete_rows',
+  'insert_columns',
   'delete_columns',
   'merge_cells',
   'unmerge_cells',
   'update_sheet_properties',
+  'format_cells',
+  'batch_format_cells',
+  'update_borders',
+  'add_conditional_formatting',
+  'set_data_validation',
   'clear_data_validation',
+  'set_basic_filter',
   'clear_basic_filter',
+  'create_chart',
   'update_chart',
   'delete_chart',
+  'add_table',
   'update_table',
   'delete_table',
 ]);
@@ -233,8 +399,11 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       options.sheetsClient ?? google.sheets({ version: 'v4', auth: this.#oauthClient });
   }
 
-  getSheetsClient(_policy: GoogleSheetsGatewayPolicy): any {
-    return this.#wrapApi(this.#sheetsClient, _policy);
+  getSheetsClient(policy: GoogleSheetsGatewayPolicy): any {
+    const enforced = currentGoogleSheetsGatewayPolicy(this);
+    return this.#wrapApi(this.#sheetsClient, {
+      idempotent: policy.idempotent && enforced?.idempotent !== false,
+    });
   }
 
   #wrapApi(value: unknown, policy: GoogleSheetsGatewayPolicy): any {
@@ -993,13 +1162,13 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
 
     let gridShrinks = false;
     let metadataState: unknown;
-    if (EXACT_METADATA_OPERATIONS.has(operation) && spreadsheetId) {
-      const sheets = this.getSheetsClient({ idempotent: true });
-      const metadata = await sheets.spreadsheets.get({
-        spreadsheetId,
-      });
-      metadataState = metadata.data;
+    if (METADATA_STATE_OPERATIONS.has(operation) && spreadsheetId) {
+      metadataState = await this.#readVerificationMetadata(spreadsheetId, ranges);
     }
+    const destinationMetadataState =
+      operation === 'copy_to' && typeof arguments_.destinationSpreadsheetId === 'string'
+        ? await this.#readVerificationMetadata(arguments_.destinationSpreadsheetId)
+        : undefined;
     if (operation === 'update_sheet_properties' && spreadsheetId) {
       const metadata = metadataState as { sheets?: any[] } | undefined;
       const sheet = (metadata?.sheets ?? []).find(
@@ -1024,10 +1193,14 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       'append_values',
       'prepare_row_change',
     ].includes(operation);
+    const appendEvidence =
+      operation === 'append_values' ? appendPreflightEvidence(valueRanges[0]) : null;
     let before: unknown = valueOperation
-      ? operation === 'batch_update_values'
-        ? valueRanges.map((entry) => ({ range: entry.range, values: entry.values }))
-        : (valueRanges[0]?.values ?? null)
+      ? operation === 'append_values'
+        ? appendEvidence
+        : operation === 'batch_update_values'
+          ? valueRanges.map((entry) => ({ range: entry.range, values: entry.values }))
+          : (valueRanges[0]?.values ?? null)
       : { ranges: valueRanges, metadata: metadataState ?? null };
     let after: unknown =
       operation === 'batch_update_values' ? arguments_.data : (arguments_.values ?? arguments_);
@@ -1066,7 +1239,10 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
           : {}),
       },
       driveRevisions,
-      state: { valueRanges, metadataState, driveRevisions },
+      state:
+        operation === 'append_values'
+          ? { appendEvidence, metadataState, destinationMetadataState, driveRevisions }
+          : { valueRanges, metadataState, destinationMetadataState, driveRevisions },
     };
   }
 
@@ -1081,12 +1257,53 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
   async verifyOperation(
     operation: string,
     arguments_: Record<string, unknown>,
+    result: unknown,
     preflight: OperationPreflight
   ): Promise<boolean> {
+    if (operation === 'create_spreadsheet') {
+      const createdSpreadsheetId =
+        result && typeof result === 'object'
+          ? (result as { spreadsheetId?: unknown }).spreadsheetId
+          : undefined;
+      if (typeof createdSpreadsheetId !== 'string') {
+        return false;
+      }
+      const post = await this.#readVerificationMetadata(createdSpreadsheetId);
+      const requestedSheets = Array.isArray(arguments_.sheets) ? arguments_.sheets : [];
+      const sheetsMatch = requestedSheets.every((requested) => {
+        const expected = requested as {
+          title?: unknown;
+          rowCount?: unknown;
+          columnCount?: unknown;
+        };
+        const actual = metadataSheets(post).find(
+          (sheet) => sheet.properties?.title === expected.title
+        );
+        return Boolean(
+          actual &&
+          (expected.rowCount === undefined ||
+            actual.properties?.gridProperties?.rowCount === expected.rowCount) &&
+          (expected.columnCount === undefined ||
+            actual.properties?.gridProperties?.columnCount === expected.columnCount)
+        );
+      });
+      if (
+        (post as { properties?: { title?: unknown } } | undefined)?.properties?.title !==
+          arguments_.title ||
+        !sheetsMatch
+      ) {
+        return false;
+      }
+      if (typeof arguments_.folderId === 'string') {
+        const file = await this.#driveFile(createdSpreadsheetId);
+        return file.parents.includes(arguments_.folderId);
+      }
+      return true;
+    }
     const spreadsheetId =
       typeof arguments_.spreadsheetId === 'string' ? arguments_.spreadsheetId : undefined;
     if (!spreadsheetId) {
-      return operation === 'create_spreadsheet' || operation === 'sign_out';
+      return operation === 'sign_out';
     }
 
     if (operation === 'copy_to') {
@@ -1097,8 +1314,10 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       if (!destinationSpreadsheetId) {
         return false;
       }
-      const afterRevision = await this.getRevision(destinationSpreadsheetId);
-      return afterRevision !== preflight.driveRevisions[destinationSpreadsheetId];
+      const post = await this.#readVerificationMetadata(destinationSpreadsheetId);
+      const before = (preflight.state as { destinationMetadataState?: unknown } | undefined)
+        ?.destinationMetadataState;
+      return metadataSheets(post).length === metadataSheets(before).length + 1;
     }
 
     if (operation === 'update_values' || operation === 'batch_update_values') {
@@ -1115,9 +1334,312 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
         JSON.stringify(expected.map((values) => normalizedValues(values)))
       );
     }
+    if (operation === 'append_values') {
+      const updatedRange = /range:\s*([^\n]+)$/iu.exec(toolResponseText(result))?.[1]?.trim();
+      if (!updatedRange) {
+        return false;
+      }
+      const [actual] = await this.readValueRanges(spreadsheetId, [updatedRange]);
+      return (
+        JSON.stringify(normalizedValues(actual?.values ?? [])) ===
+        JSON.stringify(normalizedValues(arguments_.values))
+      );
+    }
+    if (operation === 'clear_values') {
+      const actual = await this.readValueRanges(
+        spreadsheetId,
+        operationRanges(operation, arguments_)
+      );
+      return actual.every((entry) => normalizedValues(entry.values).length === 0);
+    }
+    if (operation === 'insert_link') {
+      const separator = arguments_.useEUFormat === false ? ',' : ';';
+      if (typeof arguments_.url !== 'string') {
+        return false;
+      }
+      const url = arguments_.url;
+      const label = typeof arguments_.text === 'string' ? arguments_.text : url;
+      const actual = await this.readValueRanges(
+        spreadsheetId,
+        operationRanges(operation, arguments_)
+      );
+      return partialMatch(actual[0]?.values, [[`=HYPERLINK("${url}"${separator}"${label}")`]]);
+    }
+    if (operation === 'insert_date') {
+      const expected = toolResponseData(result)?.formattedDate;
+      if (typeof expected !== 'string') {
+        return false;
+      }
+      const actual = await this.readValueRanges(
+        spreadsheetId,
+        operationRanges(operation, arguments_)
+      );
+      return partialMatch(actual[0]?.values, [[expected]]);
+    }
 
-    const afterRevision = await this.getRevision(spreadsheetId);
-    return afterRevision !== preflight.driveRevisions[spreadsheetId];
+    const post = await this.#readVerificationMetadata(
+      spreadsheetId,
+      operationRanges(operation, arguments_)
+    );
+    const before = (preflight.state as { metadataState?: unknown } | undefined)?.metadataState;
+    const postSheets = metadataSheets(post);
+    const beforeSheets = metadataSheets(before);
+    if (operation === 'insert_sheet') {
+      const created = postSheets.find((sheet) => sheet.properties?.title === arguments_.title);
+      const wasAbsent = !beforeSheets.some((sheet) => sheet.properties?.title === arguments_.title);
+      return Boolean(
+        wasAbsent &&
+        created &&
+        (arguments_.index === undefined || created.properties?.index === arguments_.index) &&
+        (arguments_.rowCount === undefined ||
+          created.properties?.gridProperties?.rowCount === arguments_.rowCount) &&
+        (arguments_.columnCount === undefined ||
+          created.properties?.gridProperties?.columnCount === arguments_.columnCount)
+      );
+    }
+    if (operation === 'duplicate_sheet') {
+      const grew = postSheets.length === beforeSheets.length + 1;
+      return (
+        grew &&
+        (typeof arguments_.newSheetName !== 'string' ||
+          postSheets.some((sheet) => sheet.properties?.title === arguments_.newSheetName))
+      );
+    }
+    if (operation === 'delete_sheet') {
+      return (
+        beforeSheets.some((sheet) => sheet.properties?.sheetId === arguments_.sheetId) &&
+        !postSheets.some((sheet) => sheet.properties?.sheetId === arguments_.sheetId)
+      );
+    }
+    if (operation === 'batch_delete_sheets') {
+      const deleted = new Set(Array.isArray(arguments_.sheetIds) ? arguments_.sheetIds : []);
+      return (
+        deleted.size > 0 &&
+        [...deleted].every((sheetId) =>
+          beforeSheets.some((sheet) => sheet.properties?.sheetId === sheetId)
+        ) &&
+        postSheets.every((sheet) => !deleted.has(sheet.properties?.sheetId))
+      );
+    }
+    if (operation === 'update_sheet_properties') {
+      const sheet = postSheets.find((entry) => entry.properties?.sheetId === arguments_.sheetId);
+      return Boolean(
+        sheet &&
+        partialMatch(sheet.properties, {
+          ...(arguments_.title !== undefined ? { title: arguments_.title } : {}),
+          ...(arguments_.gridProperties !== undefined
+            ? { gridProperties: arguments_.gridProperties }
+            : {}),
+          ...(arguments_.tabColor !== undefined ? { tabColor: arguments_.tabColor } : {}),
+        })
+      );
+    }
+    if (['insert_rows', 'delete_rows', 'insert_columns', 'delete_columns'].includes(operation)) {
+      const beforeSheet = sheetForArguments(before, arguments_);
+      const postSheet = sheetForArguments(post, arguments_);
+      if (!beforeSheet || !postSheet) {
+        return false;
+      }
+      const rows = operation.endsWith('rows');
+      const property = rows ? 'rowCount' : 'columnCount';
+      const dimension = rows ? 'ROWS' : 'COLUMNS';
+      const count = operation.startsWith('insert')
+        ? Number(arguments_[rows ? 'rows' : 'columns'] ?? 1)
+        : typeof arguments_.range === 'string'
+          ? rangeSize(arguments_.range, dimension)
+          : null;
+      if (!count) {
+        return false;
+      }
+      const expectedDelta = operation.startsWith('insert') ? count : -count;
+      return (
+        Number(postSheet.properties?.gridProperties?.[property]) ===
+        Number(beforeSheet.properties?.gridProperties?.[property]) + expectedDelta
+      );
+    }
+    if (operation === 'merge_cells' || operation === 'unmerge_cells') {
+      const range =
+        typeof arguments_.range === 'string' ? exactGridRange(post, arguments_.range) : null;
+      if (!range) {
+        return false;
+      }
+      const merged = postSheets.some((sheet) =>
+        (sheet.merges ?? []).some((candidate: unknown) => partialMatch(candidate, range))
+      );
+      if (operation === 'merge_cells') {
+        return merged;
+      }
+      const beforeRange =
+        typeof arguments_.range === 'string' ? exactGridRange(before, arguments_.range) : null;
+      const wasMerged = beforeSheets.some((sheet) =>
+        (sheet.merges ?? []).some((candidate: unknown) => partialMatch(candidate, beforeRange))
+      );
+      return wasMerged && !merged;
+    }
+    if (operation === 'format_cells') {
+      const cells = metadataCells(post);
+      return (
+        cells.length > 0 &&
+        cells.every((cell) => partialMatch(cell.userEnteredFormat, arguments_.format))
+      );
+    }
+    if (operation === 'batch_format_cells') {
+      const formats = Array.isArray(arguments_.formatRequests)
+        ? arguments_.formatRequests.map((entry) => (entry as { format?: unknown }).format)
+        : [];
+      const cells = metadataCells(post);
+      return (
+        formats.length > 0 &&
+        formats.every((format) =>
+          cells.some((cell) => partialMatch(cell.userEnteredFormat, format))
+        )
+      );
+    }
+    if (operation === 'update_borders') {
+      const requested = Object.entries((arguments_.borders ?? {}) as Record<string, unknown>);
+      const cells = metadataCells(post);
+      return requested.every(([side, border]) =>
+        cells.some((cell) => partialMatch(cell.userEnteredFormat?.borders?.[side], border))
+      );
+    }
+    if (operation === 'set_data_validation' || operation === 'clear_data_validation') {
+      const cells = metadataCells(post);
+      const beforeCells = metadataCells(before);
+      return (
+        cells.length > 0 &&
+        (operation !== 'clear_data_validation' ||
+          beforeCells.some(
+            (cell) => cell.dataValidation !== null && cell.dataValidation !== undefined
+          )) &&
+        cells.every((cell) =>
+          operation === 'clear_data_validation'
+            ? cell.dataValidation === null || cell.dataValidation === undefined
+            : partialMatch(cell.dataValidation, arguments_.rule)
+        )
+      );
+    }
+    if (operation === 'set_basic_filter' || operation === 'clear_basic_filter') {
+      const sheet = sheetForArguments(post, arguments_);
+      if (!sheet) {
+        return false;
+      }
+      if (operation === 'clear_basic_filter') {
+        const beforeSheet = sheetForArguments(before, arguments_);
+        return (
+          beforeSheet?.basicFilter !== null &&
+          beforeSheet?.basicFilter !== undefined &&
+          (sheet.basicFilter === null || sheet.basicFilter === undefined)
+        );
+      }
+      const range =
+        typeof arguments_.range === 'string' ? exactGridRange(post, arguments_.range) : null;
+      return partialMatch(sheet.basicFilter, {
+        ...(range ? { range } : {}),
+        ...(arguments_.sortSpecs ? { sortSpecs: arguments_.sortSpecs } : {}),
+        ...(arguments_.filterSpecs ? { filterSpecs: arguments_.filterSpecs } : {}),
+        ...(arguments_.criteria ? { criteria: arguments_.criteria } : {}),
+      });
+    }
+    if (operation === 'add_conditional_formatting') {
+      const beforeCount = beforeSheets.reduce(
+        (total, sheet) => total + (sheet.conditionalFormats?.length ?? 0),
+        0
+      );
+      const postRules = postSheets.flatMap((sheet) => sheet.conditionalFormats ?? []);
+      const requested = Array.isArray(arguments_.rules) ? arguments_.rules : [];
+      const expectedRules = requested.map((rule) => {
+        const requestedRule = rule as { ranges?: unknown } & Record<string, unknown>;
+        const requestedRanges = Array.isArray(requestedRule.ranges)
+          ? requestedRule.ranges.flatMap((range) =>
+              typeof range === 'string' ? [exactGridRange(post, range)] : []
+            )
+          : [];
+        return { ...requestedRule, ranges: requestedRanges };
+      });
+      return (
+        postRules.length === beforeCount + requested.length &&
+        expectedRules.every((rule) => postRules.some((postRule) => partialMatch(postRule, rule)))
+      );
+    }
+    if (operation === 'create_chart') {
+      const charts = metadataCharts(post);
+      return (
+        charts.length === metadataCharts(before).length + 1 &&
+        charts.some((chart) =>
+          partialMatch(chart.spec, {
+            ...(arguments_.title ? { title: arguments_.title } : {}),
+            ...(arguments_.chartType ? { basicChart: { chartType: arguments_.chartType } } : {}),
+          })
+        )
+      );
+    }
+    if (operation === 'update_chart') {
+      const chart = metadataCharts(post).find((entry) => entry.chartId === arguments_.chartId);
+      return Boolean(
+        chart &&
+        partialMatch(chart.spec, {
+          ...(arguments_.title !== undefined ? { title: arguments_.title } : {}),
+          ...(arguments_.subtitle !== undefined ? { subtitle: arguments_.subtitle } : {}),
+          ...(arguments_.chartType !== undefined
+            ? { basicChart: { chartType: arguments_.chartType } }
+            : {}),
+        })
+      );
+    }
+    if (operation === 'delete_chart') {
+      return (
+        metadataCharts(before).some((chart) => chart.chartId === arguments_.chartId) &&
+        !metadataCharts(post).some((chart) => chart.chartId === arguments_.chartId)
+      );
+    }
+    if (operation === 'add_table') {
+      const table = metadataTables(post).find((entry) => entry.name === arguments_.name);
+      return Boolean(
+        metadataTables(post).length === metadataTables(before).length + 1 &&
+        table &&
+        (!Array.isArray(arguments_.columns) ||
+          partialMatch(
+            table.columnProperties?.map((column: any) => ({ name: column.columnName })),
+            arguments_.columns.map((column: any) => ({ name: column.name }))
+          ))
+      );
+    }
+    if (operation === 'update_table') {
+      const table = metadataTables(post).find((entry) => entry.tableId === arguments_.tableId);
+      return Boolean(
+        table &&
+        partialMatch(table, {
+          ...(arguments_.name !== undefined ? { name: arguments_.name } : {}),
+          ...(Array.isArray(arguments_.columns)
+            ? {
+                columnProperties: arguments_.columns.map((column: any) => ({
+                  columnName: column.name,
+                })),
+              }
+            : {}),
+        })
+      );
+    }
+    if (operation === 'delete_table') {
+      return (
+        metadataTables(before).some((table) => table.tableId === arguments_.tableId) &&
+        !metadataTables(post).some((table) => table.tableId === arguments_.tableId)
+      );
+    }
+    return false;
+  }
+
+  async #readVerificationMetadata(
+    spreadsheetId: string,
+    ranges: readonly string[] = []
+  ): Promise<unknown> {
+    const sheets = this.getSheetsClient({ idempotent: true });
+    const response = await sheets.spreadsheets.get({
+      spreadsheetId,
+      includeGridData: ranges.length > 0,
+      ...(ranges.length > 0 ? { ranges: [...ranges] } : {}),
+    });
+    return response.data;
   }
 
   async revokeGoogleGrant(): Promise<void> {

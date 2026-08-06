@@ -1,6 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { GoogleSheetsGateway, GoogleSheetsGatewayPolicy } from '../google/google-api-client.js';
+import type {
+  GoogleSheetsGateway,
+  GoogleSheetsGatewayPolicy,
+} from '../google/google-api-client.js';
 
 interface GatewayContext {
   gateway: GoogleSheetsGateway;
@@ -15,6 +18,13 @@ export function runWithGoogleSheetsGateway<T>(
   operation: () => Promise<T>
 ): Promise<T> {
   return gatewayContext.run({ gateway, policy }, operation);
+}
+
+export function currentGoogleSheetsGatewayPolicy(
+  gateway: GoogleSheetsGateway
+): GoogleSheetsGatewayPolicy | null {
+  const context = gatewayContext.getStore();
+  return context?.gateway === gateway ? context.policy : null;
 }
 
 export async function getAuthenticatedClient(): Promise<any> {

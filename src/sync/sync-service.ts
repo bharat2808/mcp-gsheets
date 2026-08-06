@@ -26,6 +26,10 @@ export interface RefreshResult {
   sheetsIndexed: number;
   rowsIndexed: number;
   completedAt: string;
+  resources: Array<
+    | { spreadsheetId: string; status: 'indexed' | 'current' | 'removed' }
+    | { spreadsheetId: string; status: 'failed'; error: string }
+  >;
 }
 
 export class SyncService {
@@ -37,11 +41,13 @@ export class SyncService {
   ) {}
 
   async refresh(selectedFolderIds: readonly string[]): Promise<RefreshResult> {
+    const previousSpreadsheetIds = new Set(this.index.getCatalog().map((record) => record.id));
     const catalog = buildSelectedCatalog(await this.drive.listFileGraph(), selectedFolderIds);
     this.index.retainSpreadsheets(catalog.map((record) => record.id));
     let sheetsIndexed = 0;
     let rowsIndexed = 0;
     let spreadsheetsIndexed = 0;
+    const resources: RefreshResult['resources'] = [];
     const completedAt = this.now().toISOString();
 
     for (const spreadsheet of catalog) {
@@ -55,6 +61,7 @@ export class SyncService {
           indexStatus: 'current',
           lastIndexedAt: previousRecord.lastIndexedAt,
         });
+        resources.push({ spreadsheetId: spreadsheet.id, status: 'current' });
         continue;
       }
       this.index.upsertSpreadsheet(spreadsheet);
@@ -113,10 +120,24 @@ export class SyncService {
           lastIndexedAt: completedAt,
         });
         spreadsheetsIndexed += 1;
-      } catch {
+        resources.push({ spreadsheetId: spreadsheet.id, status: 'indexed' });
+      } catch (error) {
         this.index.upsertSpreadsheet({ ...spreadsheet, indexStatus: 'unavailable' });
+        resources.push({
+          spreadsheetId: spreadsheet.id,
+          status: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
+
+    const discoveredIds = new Set(catalog.map((record) => record.id));
+    for (const spreadsheetId of previousSpreadsheetIds) {
+      if (!discoveredIds.has(spreadsheetId)) {
+        resources.push({ spreadsheetId, status: 'removed' });
+      }
+    }
+    resources.sort((first, second) => first.spreadsheetId.localeCompare(second.spreadsheetId));
 
     return {
       spreadsheetsDiscovered: catalog.length,
@@ -124,6 +145,7 @@ export class SyncService {
       sheetsIndexed,
       rowsIndexed,
       completedAt,
+      resources,
     };
   }
 }

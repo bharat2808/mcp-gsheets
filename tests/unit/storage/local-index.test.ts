@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +23,33 @@ afterEach(() => {
 });
 
 describe('LocalIndex', () => {
+  it('restricts the index directory, database, and SQLite sidecar permissions', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'gsheets-index-modes-'));
+    tempDirectories.push(directory);
+    chmodSync(directory, 0o777);
+    const databasePath = join(directory, 'index.sqlite');
+    const index = new LocalIndex(databasePath, Buffer.alloc(32, 9));
+
+    index.initialize();
+    index.upsertSpreadsheet({
+      id: 'spreadsheet-1',
+      name: 'Accounts',
+      path: '/Finance/Accounts',
+      modifiedTime: '2026-08-05T00:00:00.000Z',
+      version: '12',
+      indexStatus: 'current',
+      lastIndexedAt: '2026-08-05T00:01:00.000Z',
+    });
+
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    expect(statSync(databasePath).mode & 0o777).toBe(0o600);
+    for (const path of [`${databasePath}-wal`, `${databasePath}-shm`]) {
+      expect(existsSync(path)).toBe(true);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
+    index.close();
+  });
+
   it('persists the encrypted authenticated account identity', () => {
     const { index, databasePath } = createIndex();
 
@@ -275,6 +302,23 @@ describe('LocalIndex', () => {
     expect(index.hasPendingVerification(['spreadsheet:book-1'])).toBe(false);
     index.close();
     expect(readFileSync(databasePath).includes(Buffer.from('refresh failed'))).toBe(false);
+  });
+
+  it('removes only confirmed resource ids from a mixed pending verification block', () => {
+    const { index } = createIndex();
+    index.recordPendingVerification({
+      operation: 'batch_update_values',
+      recordedAt: '2026-08-05T00:03:00.000Z',
+      affectedResourceIds: ['spreadsheet:book-1', 'spreadsheet:book-2'],
+      error: 'partial refresh failed',
+    });
+
+    index.clearPendingVerifications(['spreadsheet:book-1']);
+
+    expect(index.getPendingVerifications()).toEqual([
+      expect.objectContaining({ affectedResourceIds: ['spreadsheet:book-2'] }),
+    ]);
+    index.close();
   });
 
   it('rolls back encrypted audit and pending inserts when encryption fails', () => {

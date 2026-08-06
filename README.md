@@ -1,6 +1,6 @@
 # GSheets local plugin
 
-GSheets `0.2.0` is a local Codex plugin for finding and safely changing Google Sheets in explicitly selected folders in the authenticated account's owned My Drive. It keeps an encrypted local index, exposes one normalized MCP operation surface, and routes all Google access through Desktop OAuth.
+GSheets `0.2.0` is a local Codex plugin for finding and safely changing Google Sheets in explicitly selected folders in the authenticated account's owned My Drive. It keeps a local index with encrypted content fields, exposes one normalized MCP operation surface, and routes all Google access through Desktop OAuth.
 
 `0.2.0` is intentionally breaking: operation names no longer carry a product prefix, and no public aliases are provided.
 
@@ -45,7 +45,7 @@ The default surface is `core`. Set `GSHEETS_TOOL_CATEGORIES` to a comma-separate
 - A write that applied but could not be verified or refreshed is reported as `applied_verification_pending`; overlapping destructive work stays blocked until a successful refresh.
 - Sign-out has an exact preview, optionally revokes the Google grant, deletes tokens, and clears account-bound encrypted index data only after approval.
 
-Tokens, the OAuth client secret, and the local data key live in the operating-system credential vault. Indexed values, headers, selections, detected changes, audits, and pending-verification records are AES-256-GCM encrypted in SQLite; search uses keyed HMAC blind tokens.
+Tokens, the OAuth client secret, and the local data key live in the operating-system credential vault. Indexed cell values, headers, native-table details, selections, account identity, detected changes, audits, and pending-verification records are AES-256-GCM encrypted in SQLite; search uses keyed HMAC blind tokens. Catalog and lookup fields needed for indexing remain plaintext: spreadsheet IDs, names, paths, modification/version/freshness timestamps, sheet IDs/titles/used ranges, row numbers and fingerprints, and blind-token hashes. The data directory is restricted to the current user (`0700`) and SQLite database/WAL/SHM files to `0600` on supported platforms.
 
 ## Verify
 
@@ -57,12 +57,13 @@ uv run --with pyyaml python /Users/home/.codex/skills/.system/plugin-creator/scr
 uv run --with pyyaml python /Users/home/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/gsheets
 ```
 
-`integration:dry` validates and prints the gated School Records lifecycle without using credentials. For a real acceptance run, use a dedicated Google test account and folder, build first, connect an isolated `GSHEETS_DATA_DIR` profile through its localhost setup page, and note that reviewed sign-out removes the connected token from the OS credential vault. Then run:
+`integration:dry` validates and prints the gated School Records lifecycle without using credentials. For a real acceptance run, use a dedicated Google test account and folder, build first, connect an isolated profile using the same dedicated keyring service shown below through its localhost setup page, and note that the harness clears that service's tokens, client secret, and data key during cleanup. Then run:
 
 ```bash
 GSHEETS_LIVE_TEST=1 \
 GSHEETS_LIVE_DATA_DIR=/absolute/path/to/isolated-profile \
 GSHEETS_LIVE_FOLDER_ID=selected-owned-my-drive-folder-id \
+GSHEETS_LIVE_CREDENTIAL_SERVICE=gsheets-live-school-records \
 npm run integration:live
 ```
 

@@ -16,6 +16,42 @@ const TOKENS = {
 };
 
 describe('GoogleSheetsGateway retained-handler context', () => {
+  function verificationFixture(options: {
+    metadata?: Record<string, unknown>;
+    values?: unknown[][];
+    version?: string;
+  }) {
+    const get = vi.fn().mockResolvedValue({ data: options.metadata ?? { sheets: [] } });
+    const batchGet = vi.fn().mockResolvedValue({
+      data: { valueRanges: [{ range: 'Plan!A2:B2', values: options.values ?? [] }] },
+    });
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ version: options.version ?? '7' }), { status: 200 })
+      ),
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { get, values: { batchGet } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
+    );
+    return { gateway, get, batchGet };
+  }
+
+  function verificationPreflight(metadataState: unknown = { sheets: [] }) {
+    return {
+      affectedResources: [{ kind: 'spreadsheet' as const, id: 'book', label: 'book' }],
+      preview: { kind: 'exact' as const, before: metadataState, after: null },
+      riskInspection: {},
+      driveRevisions: { book: '7' },
+      state: { valueRanges: [], metadataState, driveRevisions: { book: '7' } },
+    };
+  }
+
   it('expands flexible value ranges and verifies every target cell was empty before direct write', async () => {
     const batchGet = vi.fn().mockResolvedValue({
       data: { valueRanges: [{ range: 'Plan!A2:B3', values: [] }] },
@@ -57,7 +93,7 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     expect(preflight.preview).toMatchObject({ kind: 'values', before: [] });
   });
 
-  it('preflights both copy spreadsheets and verifies the mutated destination revision', async () => {
+  it('preflights both copy spreadsheets and verifies the copied sheet in the destination', async () => {
     const versions = new Map([
       ['source-book', '4'],
       ['destination-book', '8'],
@@ -69,6 +105,19 @@ describe('GoogleSheetsGateway retained-handler context', () => {
         status: 200,
       });
     });
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: { sheets: [{ properties: { sheetId: 1, title: 'Existing' } }] },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          sheets: [
+            { properties: { sheetId: 1, title: 'Existing' } },
+            { properties: { sheetId: 2, title: 'Copied sheet' } },
+          ],
+        },
+      });
     const gateway = new GoogleSheetsGateway(
       TOKENS,
       'client-id',
@@ -76,7 +125,10 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       vi.fn(),
       fetcher,
       Date.now,
-      { authorizeSpreadsheet: async () => {} }
+      {
+        sheetsClient: { spreadsheets: { get } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
     );
 
     const arguments_ = {
@@ -95,10 +147,338 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       'source-book': '4',
       'destination-book': '8',
     });
+    expect(preflight.state).toMatchObject({
+      destinationMetadataState: {
+        sheets: [{ properties: { sheetId: 1, title: 'Existing' } }],
+      },
+    });
 
     versions.set('destination-book', '9');
-    await expect(gateway.verifyOperation('copy_to', arguments_, preflight)).resolves.toBe(true);
-    expect(fetcher.mock.calls.at(-1)?.[0]).toContain('destination-book');
+    await expect(gateway.verifyOperation('copy_to', arguments_, {}, preflight)).resolves.toBe(true);
+    expect(get).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ spreadsheetId: 'destination-book' }),
+      { retry: false }
+    );
+  });
+
+  it('verifies an inserted worksheet from its requested post-state even when revision is unchanged', async () => {
+    const { gateway, get } = verificationFixture({
+      metadata: {
+        sheets: [
+          { properties: { sheetId: 1, title: 'Existing' } },
+          {
+            properties: {
+              sheetId: 2,
+              title: 'Created',
+              index: 1,
+              gridProperties: { rowCount: 25, columnCount: 6 },
+            },
+          },
+        ],
+      },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'insert_sheet',
+        { spreadsheetId: 'book', title: 'Created', index: 1, rowCount: 25, columnCount: 6 },
+        {},
+        verificationPreflight({ sheets: [{ properties: { sheetId: 1, title: 'Existing' } }] })
+      )
+    ).resolves.toBe(true);
+    expect(get).toHaveBeenCalled();
+  });
+
+  it('verifies a created spreadsheet by reading its requested title and initial sheets', async () => {
+    const { gateway } = verificationFixture({
+      metadata: {
+        properties: { title: 'School Records' },
+        sheets: [
+          {
+            properties: {
+              title: 'Students',
+              gridProperties: { rowCount: 100, columnCount: 10 },
+            },
+          },
+        ],
+      },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'create_spreadsheet',
+        {
+          title: 'School Records',
+          sheets: [{ title: 'Students', rowCount: 100, columnCount: 10 }],
+        },
+        { spreadsheetId: 'created-book' },
+        verificationPreflight()
+      )
+    ).resolves.toBe(true);
+  });
+
+  it('rejects a create response when the requested spreadsheet post-state is absent', async () => {
+    const { gateway } = verificationFixture({
+      metadata: { properties: { title: 'Concurrent book' }, sheets: [] },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'create_spreadsheet',
+        { title: 'School Records' },
+        { spreadsheetId: 'created-book' },
+        verificationPreflight()
+      )
+    ).resolves.toBe(false);
+  });
+
+  it('rejects a concurrent wrong structural change even when the Drive revision advanced', async () => {
+    const { gateway } = verificationFixture({
+      version: '8',
+      metadata: {
+        sheets: [
+          { properties: { sheetId: 1, title: 'Existing' } },
+          { properties: { sheetId: 2, title: 'Wrong sheet' } },
+        ],
+      },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'insert_sheet',
+        { spreadsheetId: 'book', title: 'Created' },
+        {},
+        verificationPreflight({ sheets: [{ properties: { sheetId: 1, title: 'Existing' } }] })
+      )
+    ).resolves.toBe(false);
+  });
+
+  it('rejects a structural delete when the target was already absent before the call', async () => {
+    const { gateway } = verificationFixture({
+      metadata: { sheets: [{ properties: { sheetId: 1, title: 'Existing' } }] },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'delete_sheet',
+        { spreadsheetId: 'book', sheetId: 99 },
+        {},
+        verificationPreflight({ sheets: [{ properties: { sheetId: 1, title: 'Existing' } }] })
+      )
+    ).resolves.toBe(false);
+  });
+
+  it('rejects partially applied formatting instead of accepting any revision change', async () => {
+    const { gateway } = verificationFixture({
+      version: '8',
+      metadata: {
+        sheets: [
+          {
+            properties: { sheetId: 1, title: 'Plan' },
+            data: [
+              {
+                rowData: {
+                  values: [
+                    { userEnteredFormat: { textFormat: { bold: true } } },
+                    { userEnteredFormat: { textFormat: { bold: false } } },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'format_cells',
+        { spreadsheetId: 'book', range: 'Plan!A1:B1', format: { textFormat: { bold: true } } },
+        {},
+        verificationPreflight()
+      )
+    ).resolves.toBe(false);
+  });
+
+  it('rejects a chart update whose requested chart post-state is absent', async () => {
+    const { gateway } = verificationFixture({
+      version: '8',
+      metadata: {
+        sheets: [
+          {
+            properties: { sheetId: 1, title: 'Plan' },
+            charts: [{ chartId: 44, spec: { title: 'Concurrent title' } }],
+          },
+        ],
+      },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'update_chart',
+        { spreadsheetId: 'book', chartId: 44, title: 'Requested title' },
+        {},
+        verificationPreflight()
+      )
+    ).resolves.toBe(false);
+  });
+
+  it('verifies a table update by table fields without requiring a revision delta', async () => {
+    const { gateway } = verificationFixture({
+      metadata: {
+        sheets: [
+          {
+            properties: { sheetId: 1, title: 'Plan' },
+            tables: [{ tableId: 'table-1', name: 'Requested name' }],
+          },
+        ],
+      },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'update_table',
+        {
+          spreadsheetId: 'book',
+          tableId: 'table-1',
+          fields: 'name',
+          name: 'Requested name',
+        },
+        {},
+        verificationPreflight()
+      )
+    ).resolves.toBe(true);
+  });
+
+  it('verifies validation and rejects a partially applied basic filter', async () => {
+    const validation = verificationFixture({
+      metadata: {
+        sheets: [
+          {
+            properties: { sheetId: 1, title: 'Plan' },
+            data: [
+              {
+                rowData: {
+                  values: [
+                    {
+                      dataValidation: {
+                        condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: 'Yes' }] },
+                        strict: true,
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await expect(
+      validation.gateway.verifyOperation(
+        'set_data_validation',
+        {
+          spreadsheetId: 'book',
+          range: 'Plan!A2',
+          rule: {
+            condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: 'Yes' }] },
+            strict: true,
+          },
+        },
+        {},
+        verificationPreflight()
+      )
+    ).resolves.toBe(true);
+
+    const filter = verificationFixture({
+      version: '8',
+      metadata: {
+        sheets: [
+          {
+            properties: { sheetId: 1, title: 'Plan' },
+            basicFilter: { criteria: { 0: { hiddenValues: ['wrong'] } } },
+          },
+        ],
+      },
+    });
+    await expect(
+      filter.gateway.verifyOperation(
+        'set_basic_filter',
+        {
+          spreadsheetId: 'book',
+          range: 'Plan!A1:B9',
+          criteria: { 0: { hiddenValues: ['requested'] } },
+        },
+        {},
+        verificationPreflight()
+      )
+    ).resolves.toBe(false);
+  });
+
+  it('verifies append values only from the returned appended range and exact values', async () => {
+    const { gateway, batchGet } = verificationFixture({ values: [['S-001', 'Asha']] });
+
+    await expect(
+      gateway.verifyOperation(
+        'append_values',
+        {
+          spreadsheetId: 'book',
+          range: 'Plan!A:B',
+          values: [['S-001', 'Asha']],
+        },
+        { content: [{ type: 'text', text: 'Successfully appended 2 cells to range: Plan!A2:B2' }] },
+        verificationPreflight()
+      )
+    ).resolves.toBe(true);
+    expect(batchGet).toHaveBeenCalledWith(
+      expect.objectContaining({ ranges: ['Plan!A2:B2'] }),
+      { retry: false }
+    );
+  });
+
+  it('retains only headers and the relevant tail as append preflight evidence', async () => {
+    const rows = [
+      ['Student ID', 'Name'],
+      ...Array.from({ length: 20 }, (_, index) => [`S-${index + 1}`, `Student ${index + 1}`]),
+    ];
+    const batchGet = vi.fn().mockResolvedValue({
+      data: { valueRanges: [{ range: 'Plan!A:B', values: rows }] },
+    });
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ version: '7' }))),
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { values: { batchGet } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
+    );
+
+    const preflight = await gateway.inspectOperation(
+      'append_values',
+      { spreadsheetId: 'book', range: 'Plan!A:B', values: [['S-21', 'Student 21']] },
+      []
+    );
+
+    expect(preflight.state).toMatchObject({
+      appendEvidence: {
+        range: 'Plan!A:B',
+        headers: ['Student ID', 'Name'],
+        tail: rows.slice(-3),
+        lastRowNumber: 21,
+      },
+    });
+    expect(preflight.state).not.toHaveProperty('valueRanges');
+    expect(preflight.preview.before).toEqual({
+      range: 'Plan!A:B',
+      headers: ['Student ID', 'Name'],
+      tail: rows.slice(-3),
+      lastRowNumber: 21,
+    });
   });
 
   it('previews the exact worksheet names removed by a batch deletion', async () => {
@@ -230,6 +610,36 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     expect(append).toHaveBeenCalledOnce();
     expect(append).toHaveBeenCalledWith({ spreadsheetId: 'book' }, { retry: false });
   });
+
+  it.each(['value', 'chart', 'table', 'grid']) (
+    'forces reviewed %s application writes to one attempt even when the handler requests retries',
+    async (family) => {
+      const write = vi.fn().mockRejectedValue({ code: 503, message: 'unavailable' });
+      const sheetsClient =
+        family === 'value'
+          ? { spreadsheets: { values: { update: write } } }
+          : { spreadsheets: { batchUpdate: write } };
+      const gateway = new GoogleSheetsGateway(
+        TOKENS,
+        'client-id',
+        'client-secret',
+        vi.fn(),
+        fetch,
+        Date.now,
+        { sheetsClient, authorizeSpreadsheet: async () => {}, sleep: vi.fn() }
+      );
+
+      await expect(
+        runWithGoogleSheetsGateway(gateway, { idempotent: false }, async () => {
+          const client = gateway.getSheetsClient({ idempotent: true });
+          return family === 'value'
+            ? client.spreadsheets.values.update({ spreadsheetId: 'book' })
+            : client.spreadsheets.batchUpdate({ spreadsheetId: 'book' });
+        })
+      ).rejects.toMatchObject({ code: 503 });
+      expect(write).toHaveBeenCalledOnce();
+    }
+  );
 
   it('reads the stable Drive account identity used to protect indexed state', async () => {
     const fetcher = vi.fn().mockResolvedValue(

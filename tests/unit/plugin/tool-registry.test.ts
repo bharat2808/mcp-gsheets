@@ -71,6 +71,30 @@ describe('gsheets operation registry', () => {
     );
   });
 
+  it('wraps retained mutation verification state in visible and structured MCP output', async () => {
+    const executeRetainedOperation = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'Updated 1 cell' }],
+      verificationState: 'applied_verification_pending',
+      verificationError: 'Index refresh failed for book',
+    });
+    const operation = OPERATIONS.find((candidate) => candidate.name === 'update_values');
+
+    const response = (await operation!.handler({ executeRetainedOperation } as any, {
+      spreadsheetId: 'book',
+      range: 'Plan!A1',
+      values: [['new']],
+    })) as any;
+
+    expect(response.content[0].text).toContain('applied_verification_pending');
+    expect(response.content[0].text).toContain('Index refresh failed for book');
+    expect(response.structuredContent).toEqual({
+      data: expect.objectContaining({
+        verificationState: 'applied_verification_pending',
+        verificationError: 'Index refresh failed for book',
+      }),
+    });
+  });
+
   it('routes sign-out only to reviewed preparation and defaults grant revocation off', async () => {
     const proposal = { version: 2, id: 'proposal', nonce: 'secret' };
     const runtime = {

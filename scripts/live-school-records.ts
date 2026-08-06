@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -7,6 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 import { CredentialVault } from '../src/auth/credential-vault.js';
 import { KeyringBackend } from '../src/auth/keyring-backend.js';
+import { dataDirectory as productionDataDirectory } from '../src/config/runtime.js';
 
 export const SCHOOL_RECORDS_FLOW = {
   workbookTitle: 'School Records',
@@ -31,7 +33,7 @@ export const SCHOOL_RECORDS_FLOW = {
 
 export type LiveTestConfiguration =
   | { mode: 'dry-run' }
-  | { mode: 'live'; dataDirectory: string; folderId: string };
+  | { mode: 'live'; dataDirectory: string; folderId: string; credentialService: string };
 
 export interface SchoolRecordsRunIdentity {
   marker: string;
@@ -56,10 +58,19 @@ export function resolveLiveTestConfiguration(
   }
   const dataDirectory = environment.GSHEETS_LIVE_DATA_DIR?.trim();
   const folderId = environment.GSHEETS_LIVE_FOLDER_ID?.trim();
-  if (!dataDirectory || !folderId) {
-    throw new Error('Live mode requires GSHEETS_LIVE_DATA_DIR and GSHEETS_LIVE_FOLDER_ID.');
+  const credentialService = environment.GSHEETS_LIVE_CREDENTIAL_SERVICE?.trim();
+  if (!dataDirectory || !folderId || !credentialService) {
+    throw new Error(
+      'Live mode requires GSHEETS_LIVE_DATA_DIR, GSHEETS_LIVE_FOLDER_ID, and GSHEETS_LIVE_CREDENTIAL_SERVICE.'
+    );
   }
-  return { mode: 'live', dataDirectory, folderId };
+  if (credentialService === 'gsheets') {
+    throw new Error('Live mode requires a dedicated non-production credential service.');
+  }
+  if (resolve(dataDirectory) === resolve(productionDataDirectory())) {
+    throw new Error('Live mode requires a dedicated non-production data directory.');
+  }
+  return { mode: 'live', dataDirectory, folderId, credentialService };
 }
 
 function text(response: Awaited<ReturnType<Client['callTool']>>): string {
@@ -290,7 +301,9 @@ export async function runLiveSchoolRecords(
   const environment = Object.fromEntries(
     Object.entries({
       ...process.env,
+      NODE_ENV: 'test',
       GSHEETS_DATA_DIR: configuration.dataDirectory,
+      GSHEETS_TEST_CREDENTIAL_SERVICE: configuration.credentialService,
       GSHEETS_TOOL_CATEGORIES: 'all',
     }).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   );
@@ -302,7 +315,7 @@ export async function runLiveSchoolRecords(
     stderr: 'pipe',
   });
   const client = new Client({ name: 'school-records-live-acceptance', version: '0.2.0' });
-  const vault = new CredentialVault(new KeyringBackend());
+  const vault = new CredentialVault(new KeyringBackend(), configuration.credentialService);
   const identity = createSchoolRecordsRunIdentity();
   let spreadsheetId = '';
   const loadAccessToken = async () => {
@@ -464,7 +477,11 @@ export async function runLiveSchoolRecords(
         spreadsheetId = '';
       }
     } finally {
-      await client.close();
+      try {
+        await client.close();
+      } finally {
+        await vault.clear();
+      }
     }
   }
 }

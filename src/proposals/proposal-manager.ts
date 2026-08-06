@@ -65,6 +65,7 @@ export interface ProposalGateway {
 }
 
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
+const MAX_RETAINED_PROPOSALS = 256;
 
 function equalState(first: unknown, second: unknown): boolean {
   return JSON.stringify(first ?? null) === JSON.stringify(second ?? null);
@@ -88,14 +89,21 @@ export function publicChangeProposal(proposal: ChangeProposal): PublicChangeProp
 export class ProposalManager {
   readonly #gateway: ProposalGateway;
   readonly #now: () => number;
+  readonly #onPruned: (proposalIds: readonly string[]) => void;
   readonly #proposals = new Map<string, ChangeProposal>();
 
-  constructor(gateway: ProposalGateway, now: () => number = Date.now) {
+  constructor(
+    gateway: ProposalGateway,
+    now: () => number = Date.now,
+    onPruned: (proposalIds: readonly string[]) => void = () => {}
+  ) {
     this.#gateway = gateway;
     this.#now = now;
+    this.#onPruned = onPruned;
   }
 
   prepare(request: ChangeRequest): ChangeProposal {
+    this.#prune(1);
     if (!request.operation.trim()) {
       throw new Error('A proposal requires an operation');
     }
@@ -225,6 +233,11 @@ export class ProposalManager {
     if (!proposal) {
       throw new Error(`Unknown proposal: ${id}`);
     }
+    if (proposal.status === 'pending' && this.#now() > Date.parse(proposal.expiresAt)) {
+      this.#proposals.delete(id);
+      this.#onPruned([id]);
+      throw new Error('Proposal has expired');
+    }
     return proposal;
   }
 
@@ -232,8 +245,28 @@ export class ProposalManager {
     if (proposal.status !== 'pending') {
       throw new Error(`Proposal is ${proposal.status}`);
     }
-    if (this.#now() > Date.parse(proposal.expiresAt)) {
-      throw new Error('Proposal has expired');
+  }
+
+  #prune(reservedSlots: number): void {
+    const removed: string[] = [];
+    for (const [id, proposal] of this.#proposals) {
+      if (proposal.status === 'pending' && this.#now() > Date.parse(proposal.expiresAt)) {
+        this.#proposals.delete(id);
+        removed.push(id);
+      }
+    }
+    const targetSize = MAX_RETAINED_PROPOSALS - reservedSlots;
+    while (this.#proposals.size > targetSize) {
+      const terminal = [...this.#proposals].find(([, proposal]) => proposal.status !== 'pending');
+      const oldest = terminal ?? this.#proposals.entries().next().value;
+      if (!oldest) {
+        break;
+      }
+      this.#proposals.delete(oldest[0]);
+      removed.push(oldest[0]);
+    }
+    if (removed.length > 0) {
+      this.#onPruned(removed);
     }
   }
 }
