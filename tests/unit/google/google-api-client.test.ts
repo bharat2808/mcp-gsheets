@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { GoogleApiClient } from '../../../src/google/google-api-client.js';
+import { GoogleSheetsGateway } from '../../../src/google/google-api-client.js';
 
-describe('GoogleApiClient', () => {
+describe('GoogleSheetsGateway', () => {
   it('uses the configured client secret when refreshing an expired token', async () => {
     let refreshBody = '';
     const fetcher: typeof fetch = async (input, init) => {
@@ -14,7 +14,7 @@ describe('GoogleApiClient', () => {
       }
       return new Response(JSON.stringify({ files: [] }), { status: 200 });
     };
-    const client = new GoogleApiClient(
+    const client = new GoogleSheetsGateway(
       {
         accessToken: 'expired',
         refreshToken: 'refresh',
@@ -61,7 +61,7 @@ describe('GoogleApiClient', () => {
           { status: 200 }
         )
       );
-    const client = new GoogleApiClient(
+    const client = new GoogleSheetsGateway(
       {
         accessToken: 'token',
         refreshToken: 'refresh',
@@ -136,7 +136,7 @@ describe('GoogleApiClient', () => {
         { status: 200 }
       );
     };
-    const client = new GoogleApiClient(
+    const client = new GoogleSheetsGateway(
       {
         accessToken: 'token',
         refreshToken: 'refresh',
@@ -212,7 +212,7 @@ describe('GoogleApiClient', () => {
           { status: 200 }
         )
       );
-    const client = new GoogleApiClient(
+    const client = new GoogleSheetsGateway(
       {
         accessToken: 'token',
         refreshToken: 'refresh',
@@ -229,7 +229,7 @@ describe('GoogleApiClient', () => {
     );
 
     await expect(
-      client.apply({
+      client.applyRow({
         id: 'proposal',
         spreadsheetId: 'book',
         spreadsheetName: 'Accounts',
@@ -278,7 +278,7 @@ describe('GoogleApiClient', () => {
           { status: 200 }
         )
       );
-    const client = new GoogleApiClient(
+    const client = new GoogleSheetsGateway(
       {
         accessToken: 'token',
         refreshToken: 'refresh',
@@ -342,7 +342,7 @@ describe('GoogleApiClient', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(metadata), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(after), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(after), { status: 200 }));
-    const client = new GoogleApiClient(
+    const client = new GoogleSheetsGateway(
       {
         accessToken: 'token',
         refreshToken: 'refresh',
@@ -358,7 +358,7 @@ describe('GoogleApiClient', () => {
       { authorizeSpreadsheet: async () => {} }
     );
 
-    await client.apply({
+    await client.applyRow({
       id: 'proposal',
       spreadsheetId: 'book',
       spreadsheetName: 'Accounts',

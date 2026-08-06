@@ -5,7 +5,7 @@ import { DriveFileMetadata } from '../drive/catalog.js';
 import { parseSheetValues } from '../indexing/sheet-parser.js';
 import { OperationPreflight } from '../operations/change-workflow.js';
 import { extractOperationResources, spreadsheetResourceIds } from '../operations/resources.js';
-import { SheetChangeRequest } from '../proposals/proposal-manager.js';
+import { RowChangeRequest } from '../proposals/proposal-manager.js';
 import { SheetsReadGateway } from '../sync/sync-service.js';
 import { extractSheetName, parseRange } from '../utils/range-helpers.js';
 
@@ -1131,7 +1131,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     }
   }
 
-  async readRow(proposal: SheetChangeRequest): Promise<Record<string, CellValue>> {
+  async readRow(proposal: RowChangeRequest): Promise<Record<string, CellValue>> {
     if (!proposal.rowNumber) {
       throw new Error('An update proposal requires a row number');
     }
@@ -1172,9 +1172,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     return Object.fromEntries(columns.map((column) => [column, row.values[column] ?? null]));
   }
 
-  async applyRow(
-    proposal: SheetChangeRequest
-  ): Promise<{ updatedRange: string; verified: boolean }> {
+  async applyRow(proposal: RowChangeRequest): Promise<{ updatedRange: string; verified: boolean }> {
     await this.authorizeSpreadsheet(proposal.spreadsheetId);
     const sheet = await this.#findSheet(proposal);
     const parsed = parseSheetValues(sheet.rawValues);
@@ -1242,12 +1240,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     return { updatedRange, verified: true };
   }
 
-  /** Backward-compatible row executor; generalized proposals use applyRow through ChangeWorkflow. */
-  async apply(proposal: SheetChangeRequest): Promise<{ updatedRange: string; verified: boolean }> {
-    return this.applyRow(proposal);
-  }
-
-  async #findSheet(proposal: Pick<SheetChangeRequest, 'spreadsheetId' | 'sheetId'>) {
+  async #findSheet(proposal: Pick<RowChangeRequest, 'spreadsheetId' | 'sheetId'>) {
     const spreadsheet = await this.readSpreadsheet(proposal.spreadsheetId);
     const sheet = spreadsheet.sheets.find((entry) => entry.sheetId === proposal.sheetId);
     if (!sheet) {
@@ -1339,5 +1332,3 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     return row;
   }
 }
-
-export { GoogleSheetsGateway as GoogleApiClient };

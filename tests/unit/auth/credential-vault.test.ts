@@ -4,20 +4,25 @@ import {
   CredentialBackend,
   CredentialVault,
   OAuthTokenSet,
+  resolveCredentialServiceName,
 } from '../../../src/auth/credential-vault.js';
 
 class MemoryBackend implements CredentialBackend {
   readonly values = new Map<string, string>();
+  readonly services: string[] = [];
 
-  async getPassword(_service: string, account: string): Promise<string | null> {
+  async getPassword(service: string, account: string): Promise<string | null> {
+    this.services.push(service);
     return this.values.get(account) ?? null;
   }
 
-  async setPassword(_service: string, account: string, password: string): Promise<void> {
+  async setPassword(service: string, account: string, password: string): Promise<void> {
+    this.services.push(service);
     this.values.set(account, password);
   }
 
-  async deletePassword(_service: string, account: string): Promise<boolean> {
+  async deletePassword(service: string, account: string): Promise<boolean> {
+    this.services.push(service);
     return this.values.delete(account);
   }
 }
@@ -82,5 +87,31 @@ describe('CredentialVault', () => {
 
     expect(await vault.loadClientSecret()).toBeNull();
     expect(await vault.getOrCreateDataKey()).toEqual(dataKey);
+  });
+
+  it('isolates every credential account under an explicit service namespace', async () => {
+    const backend = new MemoryBackend();
+    const vault = new CredentialVault(backend, 'gsheets-smoke-4d89');
+
+    await vault.getOrCreateDataKey();
+    await vault.loadTokens();
+    await vault.clear();
+
+    expect(new Set(backend.services)).toEqual(new Set(['gsheets-smoke-4d89']));
+  });
+
+  it('allows a smoke-only service namespace without changing production credential lookup', () => {
+    expect(
+      resolveCredentialServiceName({
+        NODE_ENV: 'test',
+        GSHEETS_TEST_CREDENTIAL_SERVICE: 'gsheets-smoke-4d89',
+      })
+    ).toBe('gsheets-smoke-4d89');
+    expect(
+      resolveCredentialServiceName({
+        NODE_ENV: 'production',
+        GSHEETS_TEST_CREDENTIAL_SERVICE: 'gsheets-smoke-4d89',
+      })
+    ).toBe('gsheets');
   });
 });

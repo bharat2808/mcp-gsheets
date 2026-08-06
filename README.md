@@ -53,8 +53,8 @@ Tokens, the OAuth client secret, and the local data key live in the operating-sy
 npm run check:all
 npm run smoke:built
 npm run integration:dry
-python3 /Users/home/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
-python3 /Users/home/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/gsheets
+uv run --with pyyaml python /Users/home/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
+uv run --with pyyaml python /Users/home/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/gsheets
 ```
 
 `integration:dry` validates and prints the gated School Records lifecycle without using credentials. For a real acceptance run, use a dedicated Google test account and folder, build first, connect an isolated `GSHEETS_DATA_DIR` profile through its localhost setup page, and note that reviewed sign-out removes the connected token from the OS credential vault. Then run:
@@ -66,6 +66,6 @@ GSHEETS_LIVE_FOLDER_ID=selected-owned-my-drive-folder-id \
 npm run integration:live
 ```
 
-The live harness creates **School Records** with Students, Exams, and Attendance worksheets; exercises reviewed and direct work, search, audits, cancel/approve, disposal, and reviewed sign-out; and moves the workbook to trash in cleanup. It fails closed if credentials, selection, verification, or cleanup are unavailable. Automated checks do not claim this credentialed command ran.
+The live harness creates a uniquely marked **School Records** workbook with Students, Exams, and Attendance worksheets; exercises reviewed and direct work, search, audits, cancel/approve, disposal, and reviewed sign-out; and confirms the exact workbook ID was moved to trash in cleanup. If creation applies but its response is lost, cleanup recovery is restricted to an exact-title, owned, recent Drive match and reports candidate IDs instead of guessing. It fails closed if credentials, selection, verification, or cleanup are unavailable. Automated checks do not claim this credentialed command ran.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for data flow and trust boundaries.

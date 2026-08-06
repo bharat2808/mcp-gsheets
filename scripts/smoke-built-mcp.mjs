@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+import { createSmokeChildEnvironment } from './smoke-child-environment.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const categoryNames = {
@@ -101,24 +104,46 @@ const readOnlyNames = [
 const sorted = (values) => [...values].sort();
 const allNames = sorted(Object.values(categoryNames).flat());
 const dataDirectories = [];
+const credentialServices = [];
+
+function responseData(response) {
+  if (response.structuredContent?.data !== undefined) {
+    return response.structuredContent.data;
+  }
+  const output = response.content
+    .flatMap((entry) => (entry.type === 'text' ? [entry.text] : []))
+    .join('\n');
+  const start = output.indexOf('{');
+  assert.notEqual(start, -1, `Expected JSON tool output, received: ${output}`);
+  return JSON.parse(output.slice(start));
+}
+
+async function assertDisconnected(client) {
+  const response = await client.callTool({ name: 'get_connection_status', arguments: {} });
+  assert.notEqual(response.isError, true, 'Connection status must remain callable in smoke mode');
+  assert.equal(
+    responseData(response).connected,
+    false,
+    'Built smoke child unexpectedly observed reusable Google credentials'
+  );
+}
 
 async function withBuiltClient(environment, run) {
   const dataDirectory = await mkdtemp(join(tmpdir(), 'gsheets-built-smoke-'));
+  const credentialService = `gsheets-smoke-${randomUUID()}`;
   dataDirectories.push(dataDirectory);
+  credentialServices.push(credentialService);
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['dist/index.js'],
     cwd: projectRoot,
-    env: {
-      ...process.env,
-      GSHEETS_DATA_DIR: dataDirectory,
-      ...environment,
-    },
+    env: createSmokeChildEnvironment(process.env, dataDirectory, credentialService, environment),
     stderr: 'pipe',
   });
   const client = new Client({ name: 'built-artifact-smoke-test', version: '0.2.0' });
   try {
     await client.connect(transport);
+    await assertDisconnected(client);
     await run(client);
   } finally {
     await client.close();
@@ -131,7 +156,6 @@ try {
       sorted((await client.listTools()).tools.map((tool) => tool.name)),
       sorted(categoryNames.core)
     );
-    await client.callTool({ name: 'get_connection_status', arguments: {} });
   });
 
   for (const [category, names] of Object.entries(categoryNames)) {
@@ -172,6 +196,12 @@ try {
     `Built MCP validated default, seven categories, all, read-only, and schema invocation for ${allNames.length} operations.`
   );
 } finally {
+  const { Entry } = await import('@napi-rs/keyring');
+  for (const service of credentialServices) {
+    for (const account of ['local-index-key', 'google-oauth-token', 'google-oauth-client-secret']) {
+      new Entry(service, account).deletePassword();
+    }
+  }
   await Promise.all(
     dataDirectories.map((directory) => rm(directory, { recursive: true, force: true }))
   );

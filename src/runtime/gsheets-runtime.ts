@@ -1,6 +1,10 @@
 import { join } from 'node:path';
 
-import { CredentialVault, OAuthTokenSet } from '../auth/credential-vault.js';
+import {
+  CredentialVault,
+  OAuthTokenSet,
+  resolveCredentialServiceName,
+} from '../auth/credential-vault.js';
 import { missingGoogleOAuthScopes } from '../auth/google-oauth.js';
 import { KeyringBackend } from '../auth/keyring-backend.js';
 import {
@@ -29,8 +33,8 @@ import { findDuplicateRow } from '../indexing/rows.js';
 import {
   AffectedResource,
   ChangeProposal,
-  SheetChangeOperation,
-  SheetChangeRequest,
+  RowChangeOperation,
+  RowChangeRequest,
 } from '../proposals/proposal-manager.js';
 import {
   ChangeWorkflow,
@@ -44,7 +48,7 @@ import { runWithGoogleSheetsGateway } from '../utils/google-auth.js';
 export interface PrepareChangeInput {
   spreadsheetId: string;
   sheetId: number;
-  operation: SheetChangeOperation;
+  operation: RowChangeOperation;
   rowNumber?: number;
   values: Record<string, CellValue>;
 }
@@ -79,9 +83,11 @@ export class GSheetsRuntime {
   #missingScopes: string[] = [];
 
   constructor(options: GSheetsRuntimeOptions = {}) {
-    this.#vault = options.vault ?? new CredentialVault(new KeyringBackend());
-    this.#dataDirectory = options.dataDirectory ?? defaultDataDirectory();
     this.#environment = options.environment ?? process.env;
+    this.#vault =
+      options.vault ??
+      new CredentialVault(new KeyringBackend(), resolveCredentialServiceName(this.#environment));
+    this.#dataDirectory = options.dataDirectory ?? defaultDataDirectory();
     this.#publisherClientId = options.publisherClientId ?? PUBLISHER_GOOGLE_CLIENT_ID;
     this.#setupServerFactory =
       options.setupServerFactory ?? ((setupOptions) => new OAuthSetupServer(setupOptions));
@@ -422,7 +428,7 @@ export class GSheetsRuntime {
         }
       }
     }
-    const rowRequest: SheetChangeRequest = {
+    const rowRequest: RowChangeRequest = {
       ...input,
       spreadsheetName: details.spreadsheet.name,
       spreadsheetPath: details.spreadsheet.path,

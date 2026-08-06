@@ -238,19 +238,17 @@ export class ProposalManager {
   }
 }
 
-// Transitional aliases retained for callers that still describe row proposals.
-export type SheetChangeOperation = 'append' | 'update';
-export interface SheetChangeRequest {
+export type RowChangeOperation = 'append' | 'update';
+export interface RowChangeRequest {
   spreadsheetId: string;
   spreadsheetName: string;
   spreadsheetPath: string;
   sheetId: number;
   sheetTitle: string;
-  operation: SheetChangeOperation;
+  operation: RowChangeOperation;
   rowNumber?: number;
   values: Record<string, CellValue>;
   expectedValues?: Record<string, CellValue>;
   displayBeforeValues?: Record<string, CellValue>;
   baseRevision: string;
 }
-export type SheetChangeProposal = ChangeProposal;

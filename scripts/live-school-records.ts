@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -31,6 +32,21 @@ export const SCHOOL_RECORDS_FLOW = {
 export type LiveTestConfiguration =
   | { mode: 'dry-run' }
   | { mode: 'live'; dataDirectory: string; folderId: string };
+
+export interface SchoolRecordsRunIdentity {
+  marker: string;
+  title: string;
+  createdAfter: string;
+}
+
+export function createSchoolRecordsRunIdentity(): SchoolRecordsRunIdentity {
+  const marker = randomUUID();
+  return {
+    marker,
+    title: `${SCHOOL_RECORDS_FLOW.workbookTitle} [${marker}]`,
+    createdAfter: new Date().toISOString(),
+  };
+}
 
 export function resolveLiveTestConfiguration(
   environment: Readonly<Record<string, string | undefined>>
@@ -92,17 +108,17 @@ async function approve(client: Client, prepared: Awaited<ReturnType<typeof prepa
   return response;
 }
 
-async function trashWorkbook(spreadsheetId: string): Promise<void> {
-  const tokens = await new CredentialVault(new KeyringBackend()).loadTokens();
-  if (!tokens) {
-    throw new Error('OAuth tokens disappeared before disposable workbook cleanup');
-  }
-  const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}?fields=id%2Ctrashed`,
+export async function trashWorkbook(options: {
+  spreadsheetId: string;
+  accessToken: string;
+  fetcher?: typeof fetch;
+}): Promise<void> {
+  const response = await (options.fetcher ?? fetch)(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(options.spreadsheetId)}?fields=id%2Ctrashed`,
     {
       method: 'PATCH',
       headers: {
-        authorization: `Bearer ${tokens.accessToken}`,
+        authorization: `Bearer ${options.accessToken}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ trashed: true }),
@@ -110,8 +126,108 @@ async function trashWorkbook(spreadsheetId: string): Promise<void> {
   );
   if (!response.ok) {
     throw new Error(
-      `Disposable workbook ${spreadsheetId} cleanup failed with HTTP ${response.status}`
+      `Disposable workbook ${options.spreadsheetId} cleanup failed with HTTP ${response.status}`
     );
+  }
+  let confirmation: { id?: unknown; trashed?: unknown };
+  try {
+    confirmation = (await response.json()) as { id?: unknown; trashed?: unknown };
+  } catch {
+    throw new Error(
+      `Disposable workbook ${options.spreadsheetId} cleanup returned an invalid response; retained workbook ID: ${options.spreadsheetId}`
+    );
+  }
+  if (confirmation.id !== options.spreadsheetId || confirmation.trashed !== true) {
+    throw new Error(
+      `Disposable workbook ${options.spreadsheetId} cleanup was not confirmed: Drive returned id=${String(confirmation.id)} trashed=${String(confirmation.trashed)}; retained workbook ID: ${options.spreadsheetId}; expected the matching id and trashed=true`
+    );
+  }
+}
+
+function escapedDriveString(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+}
+
+async function findDisposableWorkbook(options: {
+  identity: SchoolRecordsRunIdentity;
+  accessToken: string;
+  fetcher: typeof fetch;
+  createError: unknown;
+}): Promise<string> {
+  const url = new URL('https://www.googleapis.com/drive/v3/files');
+  url.searchParams.set(
+    'q',
+    `name = '${escapedDriveString(options.identity.title)}' and 'me' in owners and trashed = false and createdTime >= '${options.identity.createdAfter}'`
+  );
+  url.searchParams.set('fields', 'files(id,name,createdTime,trashed,ownedByMe)');
+  url.searchParams.set('pageSize', '10');
+  const response = await options.fetcher(url, {
+    headers: { authorization: `Bearer ${options.accessToken}` },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Creation response was lost and recovery lookup failed with HTTP ${response.status}; original error: ${String(options.createError)}`
+    );
+  }
+  const body = (await response.json()) as {
+    files?: Array<{
+      id?: unknown;
+      name?: unknown;
+      createdTime?: unknown;
+      trashed?: unknown;
+      ownedByMe?: unknown;
+    }>;
+  };
+  const candidates = (body.files ?? []).filter(
+    (
+      file
+    ): file is {
+      id: string;
+      name: string;
+      createdTime: string;
+      trashed: false;
+      ownedByMe: true;
+    } =>
+      typeof file.id === 'string' &&
+      file.name === options.identity.title &&
+      typeof file.createdTime === 'string' &&
+      file.createdTime >= options.identity.createdAfter &&
+      file.trashed === false &&
+      file.ownedByMe === true
+  );
+  if (candidates.length === 1) {
+    return candidates[0]!.id;
+  }
+  const candidateIds = candidates.map((candidate) => candidate.id);
+  if (candidateIds.length > 1) {
+    throw new Error(
+      `Creation response was lost and cleanup is ambiguous for ${options.identity.title}; candidate IDs: ${candidateIds.join(', ')}`
+    );
+  }
+  throw new Error(
+    `Creation response was lost and no owned recent workbook matched ${options.identity.title}; original error: ${String(options.createError)}`
+  );
+}
+
+export async function createDisposableWorkbook(options: {
+  identity: SchoolRecordsRunIdentity;
+  create: () => Promise<unknown>;
+  accessToken: string;
+  fetcher?: typeof fetch;
+}): Promise<string> {
+  try {
+    const created = (await options.create()) as { spreadsheetId?: unknown };
+    if (typeof created.spreadsheetId !== 'string' || !created.spreadsheetId) {
+      throw new Error('create_spreadsheet returned no spreadsheetId');
+    }
+    return created.spreadsheetId;
+  } catch (createError) {
+    return findDisposableWorkbook({
+      identity: options.identity,
+      accessToken: options.accessToken,
+      fetcher: options.fetcher ?? fetch,
+      createError,
+    });
   }
 }
 
@@ -133,21 +249,31 @@ export async function runLiveSchoolRecords(
     stderr: 'pipe',
   });
   const client = new Client({ name: 'school-records-live-acceptance', version: '0.2.0' });
+  const identity = createSchoolRecordsRunIdentity();
   let spreadsheetId = '';
+  let accessToken = '';
   try {
     await client.connect(transport);
     const status = json(await invoke(client, 'get_connection_status', {}));
     assert.equal(status.connected, true, `Connect the isolated profile first: ${status.setupUrl}`);
+    const tokens = await new CredentialVault(new KeyringBackend()).loadTokens();
+    if (!tokens) {
+      throw new Error('OAuth tokens disappeared before disposable workbook creation');
+    }
+    accessToken = tokens.accessToken;
 
-    const created = json(
-      await invoke(client, 'create_spreadsheet', {
-        title: SCHOOL_RECORDS_FLOW.workbookTitle,
-        folderId: configuration.folderId,
-        sheets: SCHOOL_RECORDS_FLOW.worksheets,
-      })
-    );
-    spreadsheetId = created.spreadsheetId;
-    assert.equal(typeof spreadsheetId, 'string');
+    spreadsheetId = await createDisposableWorkbook({
+      identity,
+      accessToken,
+      create: async () =>
+        json(
+          await invoke(client, 'create_spreadsheet', {
+            title: identity.title,
+            folderId: configuration.folderId,
+            sheets: SCHOOL_RECORDS_FLOW.worksheets,
+          })
+        ),
+    });
 
     const metadata = json(await invoke(client, 'get_metadata', { spreadsheetId }));
     const ids = Object.fromEntries(
@@ -267,14 +393,25 @@ export async function runLiveSchoolRecords(
     await invoke(client, 'refresh_index', {});
     const changes = json(await invoke(client, 'get_recent_changes', { limit: 100 }));
     assert.ok(changes.approvedWrites.length > 0);
-    await trashWorkbook(spreadsheetId);
+    await trashWorkbook({ spreadsheetId, accessToken });
     spreadsheetId = '';
     await approve(client, await prepare(client, 'sign_out', { revokeGoogleGrant: false }));
-    console.log('Live School Records acceptance completed and the workbook was moved to trash.');
+    console.log(
+      `Live School Records acceptance completed and ${identity.title} was confirmed in trash.`
+    );
   } finally {
-    await client.close();
-    if (spreadsheetId) {
-      await trashWorkbook(spreadsheetId);
+    try {
+      await client.close();
+    } finally {
+      if (spreadsheetId) {
+        if (!accessToken) {
+          throw new Error(
+            `Disposable workbook cleanup could not run; retained workbook ID: ${spreadsheetId}`
+          );
+        }
+        await trashWorkbook({ spreadsheetId, accessToken });
+        spreadsheetId = '';
+      }
     }
   }
 }

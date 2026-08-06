@@ -55,7 +55,6 @@ export async function handleGetBasicFilter(input: any): Promise<ToolResponse> {
       );
     }
 
-    // Build human-readable filter criteria from filterSpecs (preferred) or deprecated criteria
     const filterCriteria: Array<{
       columnIndex: number;
       columnLetter: string;
@@ -76,19 +75,6 @@ export async function handleGetBasicFilter(input: any): Promise<ToolResponse> {
           condition: fc?.condition ?? null,
           visibleBackgroundColor: fc?.visibleBackgroundColor ?? null,
           visibleForegroundColor: fc?.visibleForegroundColor ?? null,
-        });
-      }
-    } else if (bf.criteria) {
-      for (const [colIdx, fc] of Object.entries(bf.criteria)) {
-        const idx = Number(colIdx);
-        const criteria = fc;
-        filterCriteria.push({
-          columnIndex: idx,
-          columnLetter: colIndexToLetter(idx),
-          hiddenValues: criteria.hiddenValues ?? [],
-          condition: criteria.condition ?? null,
-          visibleBackgroundColor: criteria.visibleBackgroundColor ?? null,
-          visibleForegroundColor: criteria.visibleForegroundColor ?? null,
         });
       }
     }
