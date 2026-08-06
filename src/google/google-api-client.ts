@@ -410,6 +410,42 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
       return value;
     }
+    // googleapis exposes the top-level `spreadsheets` resource as a
+    // non-configurable, read-only data property. A Proxy cannot return a
+    // wrapped value for that property without violating the ECMAScript Proxy
+    // invariants, so materialize a configurable facade for such objects first.
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      Object.values(descriptors).some(
+        (descriptor) =>
+          descriptor.configurable === false &&
+          'value' in descriptor &&
+          descriptor.writable === false
+      )
+    ) {
+      const facade = Object.create(Object.getPrototypeOf(value));
+      for (const property of Reflect.ownKeys(value)) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, property);
+        if (!descriptor) {
+          continue;
+        }
+        if ('value' in descriptor) {
+          Object.defineProperty(facade, property, {
+            ...descriptor,
+            configurable: true,
+            writable: true,
+            value: this.#wrapApi(descriptor.value, policy),
+          });
+        } else {
+          Object.defineProperty(facade, property, {
+            ...descriptor,
+            configurable: true,
+            get: () => this.#wrapApi(Reflect.get(value, property), policy),
+          });
+        }
+      }
+      return facade;
+    }
     return new Proxy(value, {
       get: (target, property) => {
         const member = Reflect.get(target, property);

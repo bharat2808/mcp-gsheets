@@ -537,6 +537,12 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     sheets.mockRestore();
   });
 
+  it('exposes the real googleapis resource tree without proxy invariant errors', () => {
+    const gateway = new GoogleSheetsGateway(TOKENS, 'client-id', 'client-secret', vi.fn());
+
+    expect(() => gateway.getSheetsClient({ idempotent: true }).spreadsheets.values).not.toThrow();
+  });
+
   it('supplies the Desktop OAuth Sheets client to retained handlers', async () => {
     const get = vi.fn().mockResolvedValue({ data: { spreadsheetId: 'book' } });
     const gateway = new GoogleSheetsGateway(
