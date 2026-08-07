@@ -40,9 +40,16 @@ export class SyncService {
     private readonly now: () => Date = () => new Date()
   ) {}
 
-  async refresh(selectedFolderIds: readonly string[]): Promise<RefreshResult> {
+  async refresh(
+    selectedFolderIds: readonly string[],
+    authorizedSpreadsheetIds: readonly string[] = []
+  ): Promise<RefreshResult> {
     const previousSpreadsheetIds = new Set(this.index.getCatalog().map((record) => record.id));
-    const catalog = buildSelectedCatalog(await this.drive.listFileGraph(), selectedFolderIds);
+    const catalog = buildSelectedCatalog(
+      await this.drive.listFileGraph(),
+      selectedFolderIds,
+      authorizedSpreadsheetIds
+    );
     this.index.retainSpreadsheets(catalog.map((record) => record.id));
     let sheetsIndexed = 0;
     let rowsIndexed = 0;

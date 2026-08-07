@@ -45,6 +45,13 @@ describe('buildSelectedCatalog', () => {
     );
   });
 
+  it('includes explicitly authorized plugin-created Sheets outside selected folders', () => {
+    expect(buildSelectedCatalog(files, ['root'], ['sheet-outside'])).toEqual([
+      expect.objectContaining({ id: 'sheet-1', path: '/Finance/FY26/Accounts' }),
+      expect.objectContaining({ id: 'sheet-outside', path: '/Personal' }),
+    ]);
+  });
+
   it('builds a nested folder tree for one-call catalog exploration', () => {
     const catalog = buildSelectedCatalog(files, ['root']);
 

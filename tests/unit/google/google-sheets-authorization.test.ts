@@ -211,6 +211,25 @@ describe('GoogleSheetsGateway spreadsheet authorization', () => {
     );
   });
 
+  it('authorizes a spreadsheet created by this plugin outside selected folders', async () => {
+    const fetcher = vi.fn();
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      fetcher,
+      Date.now,
+      gatewayOptions({
+        getSelectedFolderIds: () => ['selected'],
+        isCreatedSpreadsheet: (spreadsheetId: string) => spreadsheetId === 'root-book',
+      })
+    );
+
+    await expect(gateway.authorizeSpreadsheet('root-book')).resolves.toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['Shared-with-me', { ownedByMe: false }],
     ['Shared Drive', { ownedByMe: true, driveId: 'shared-drive-1' }],

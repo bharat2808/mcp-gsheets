@@ -862,6 +862,30 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     expect(fetcher.mock.calls.filter((call) => call[1]?.method === 'PATCH')).toHaveLength(1);
   });
 
+  it('registers a root-created spreadsheet before returning it', async () => {
+    const registerCreatedSpreadsheet = vi.fn();
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ spreadsheetId: 'root-book', properties: { title: 'Root book' } }),
+        { status: 200 }
+      )
+    );
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      fetcher,
+      Date.now,
+      { registerCreatedSpreadsheet }
+    );
+
+    await expect(gateway.createSpreadsheet({ title: 'Root book' }, [])).resolves.toMatchObject({
+      spreadsheetId: 'root-book',
+    });
+    expect(registerCreatedSpreadsheet).toHaveBeenCalledWith('root-book');
+  });
+
   it('retries idempotent gateway reads but does not replay spreadsheet creation', async () => {
     const readFetcher = vi
       .fn()

@@ -556,6 +556,10 @@ export class GSheetsRuntime {
           tokensCommitted
             ? (this.#selectedFolderOverride ?? this.#requiredIndex().getSelectedFolderIds())
             : candidateSelectedFolderIds,
+        isCreatedSpreadsheet: (spreadsheetId) =>
+          this.#requiredIndex().getCreatedSpreadsheetIds().includes(spreadsheetId),
+        registerCreatedSpreadsheet: (spreadsheetId) =>
+          this.#requiredIndex().addCreatedSpreadsheet(spreadsheetId),
       }
     );
     const accountIdentity = await client.getAccountIdentity();
@@ -570,7 +574,10 @@ export class GSheetsRuntime {
     const retainedFolderIds = selectedFolderIds.filter((folderId) => selectableIds.has(folderId));
     candidateSelectedFolderIds = retainedFolderIds;
     const sync = new SyncService(index, client, client);
-    const refreshResult = await sync.refresh(retainedFolderIds);
+    const refreshResult = await sync.refresh(
+      retainedFolderIds,
+      retainsAccountData ? index.getCreatedSpreadsheetIds() : []
+    );
     const previousTokens = await this.#vault.loadTokens();
     try {
       await this.#vault.saveTokens(stagedTokens);
@@ -767,7 +774,10 @@ export class GSheetsRuntime {
     this.#selectedFolderOverride = uniqueIds;
     let refreshResult: RefreshResult;
     try {
-      refreshResult = await this.#requiredSync().refresh(uniqueIds);
+      refreshResult = await this.#requiredSync().refresh(
+        uniqueIds,
+        this.#requiredIndex().getCreatedSpreadsheetIds()
+      );
     } finally {
       this.#selectedFolderOverride = null;
     }
@@ -828,7 +838,8 @@ export class GSheetsRuntime {
       return this.#withLifecycle(async () => {
         try {
           const result = await this.#requiredSync().refresh(
-            this.#requiredIndex().getSelectedFolderIds()
+            this.#requiredIndex().getSelectedFolderIds(),
+            this.#requiredIndex().getCreatedSpreadsheetIds()
           );
           this.#applyRefreshResult(result);
           return result;

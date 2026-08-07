@@ -40,6 +40,32 @@ describe('SyncService', () => {
     index.close();
   });
 
+  it('indexes explicitly authorized plugin-created spreadsheets outside selected folders', async () => {
+    const index = new LocalIndex(
+      join(mkdtempSync(join(tmpdir(), 'gsheets-sync-')), 'index.db'),
+      Buffer.alloc(32, 14)
+    );
+    index.initialize();
+    const drive = {
+      listFileGraph: async () => [
+        { id: 'folder', name: 'Finance', mimeType: 'application/vnd.google-apps.folder', parents: [] },
+        { id: 'root-book', name: 'Root book', mimeType: 'application/vnd.google-apps.spreadsheet', parents: [], version: '1', modifiedTime: '2026-08-05T00:00:00Z' },
+      ],
+    };
+    const sheets = {
+      readSpreadsheet: async () => ({
+        sheets: [{ sheetId: 1, title: 'Sheet1', values: [['Name'], ['Asha']] }],
+      }),
+    };
+
+    const result = await new SyncService(index, drive, sheets).refresh(['folder'], ['root-book']);
+
+    expect(result).toMatchObject({ spreadsheetsDiscovered: 1, spreadsheetsIndexed: 1 });
+    expect(index.search('Asha')).toHaveLength(1);
+    expect(index.getCatalog().map((item) => item.id)).toEqual(['root-book']);
+    index.close();
+  });
+
   it('skips content downloads when the Drive revision is already current', async () => {
     const index = new LocalIndex(join(mkdtempSync(join(tmpdir(), 'gsheets-sync-')), 'index.db'), Buffer.alloc(32, 5));
     index.initialize();

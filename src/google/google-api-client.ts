@@ -20,6 +20,8 @@ interface GoogleSheetsGatewayOptions {
   sheetsClient?: unknown;
   sleep?: (milliseconds: number) => Promise<void>;
   getSelectedFolderIds?: () => readonly string[];
+  isCreatedSpreadsheet?: (spreadsheetId: string) => boolean;
+  registerCreatedSpreadsheet?: (spreadsheetId: string) => void | Promise<void>;
   authorizeSpreadsheet?: (spreadsheetId: string) => Promise<void>;
 }
 
@@ -651,6 +653,9 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       await this.options.authorizeSpreadsheet(spreadsheetId);
       return;
     }
+    if (this.options.isCreatedSpreadsheet?.(spreadsheetId)) {
+      return;
+    }
     const selectedFolderIds = this.options.getSelectedFolderIds?.() ?? [];
     if (selectedFolderIds.length === 0) {
       throw new Error('No My Drive folders are selected');
@@ -709,6 +714,7 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     if (!created.spreadsheetId) {
       throw new Error('Google Sheets did not return the created spreadsheet ID');
     }
+    await this.options.registerCreatedSpreadsheet?.(created.spreadsheetId);
     if (input.folderId) {
       try {
         await this.#moveSpreadsheetToFolder(created.spreadsheetId, input.folderId);

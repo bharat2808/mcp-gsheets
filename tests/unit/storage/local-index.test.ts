@@ -182,6 +182,18 @@ describe('LocalIndex', () => {
     expect(readFileSync(databasePath).includes(Buffer.from('"rows":[2]'))).toBe(false);
   });
 
+  it('persists plugin-created spreadsheet grants and clears them with account data', () => {
+    const { index } = createIndex();
+
+    index.addCreatedSpreadsheet('root-book');
+    index.addCreatedSpreadsheet('root-book');
+
+    expect(index.getCreatedSpreadsheetIds()).toEqual(['root-book']);
+    index.clearAccountData();
+    expect(index.getCreatedSpreadsheetIds()).toEqual([]);
+    index.close();
+  });
+
   it('keeps an encrypted audit history for approved writes', () => {
     const { index, databasePath } = createIndex();
     index.recordWriteAudit({

@@ -237,6 +237,26 @@ export class LocalIndex {
       : [];
   }
 
+  addCreatedSpreadsheet(spreadsheetId: string): void {
+    const ids = new Set(this.getCreatedSpreadsheetIds());
+    ids.add(spreadsheetId);
+    this.#db()
+      .prepare(
+        `INSERT INTO settings (key, encrypted_value) VALUES ('created-spreadsheets', ?)
+         ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`
+      )
+      .run(encryptJson(this.#key, [...ids], 'setting:created-spreadsheets'));
+  }
+
+  getCreatedSpreadsheetIds(): string[] {
+    const row = this.#db()
+      .prepare("SELECT encrypted_value FROM settings WHERE key = 'created-spreadsheets'")
+      .get() as { encrypted_value: string } | undefined;
+    return row
+      ? decryptJson<string[]>(this.#key, row.encrypted_value, 'setting:created-spreadsheets')
+      : [];
+  }
+
   setAccountIdentity(identity: string): void {
     this.#db()
       .prepare(

@@ -51,14 +51,22 @@ function resolvePath(
 
 export function buildSelectedCatalog(
   files: readonly DriveFileMetadata[],
-  selectedFolderIds: readonly string[]
+  selectedFolderIds: readonly string[],
+  authorizedSpreadsheetIds: readonly string[] = []
 ): SpreadsheetRecord[] {
   const filesById = new Map(files.map((file) => [file.id, file]));
   const selectedFolders = new Set(selectedFolderIds);
+  const authorizedSpreadsheets = new Set(authorizedSpreadsheetIds);
   return files
     .filter((file) => file.mimeType === GOOGLE_SHEET_MIME_TYPE)
     .flatMap((file) => {
-      const path = resolvePath(file, filesById, selectedFolders);
+      const path =
+        resolvePath(file, filesById, selectedFolders) ??
+        (authorizedSpreadsheets.has(file.id) &&
+        file.driveId === undefined &&
+        file.ownedByMe !== false
+          ? [file.name]
+          : null);
       if (!path) {
         return [];
       }
