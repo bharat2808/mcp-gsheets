@@ -30,9 +30,11 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       'client-id',
       'client-secret',
       vi.fn(),
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ version: options.version ?? '7' }), { status: 200 })
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ version: options.version ?? '7' }), { status: 200 })
+        ),
       Date.now,
       {
         sheetsClient: { spreadsheets: { get, values: { batchGet } } } as any,
@@ -91,6 +93,63 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     );
     expect(preflight.riskInspection.targetCellsVerifiedEmpty).toBe(true);
     expect(preflight.preview).toMatchObject({ kind: 'values', before: [] });
+  });
+
+  it('verifies USER_ENTERED batch values after Google coerces scalar types', async () => {
+    const batchGet = vi.fn().mockResolvedValue({
+      data: {
+        valueRanges: [
+          {
+            range: 'Exams!A1:B3',
+            values: [
+              ['Student ID', 'Score'],
+              ['S001', 95],
+              ['S002', 88],
+            ],
+          },
+        ],
+      },
+    });
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      vi.fn(),
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { values: { batchGet } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
+    );
+    const arguments_ = {
+      spreadsheetId: 'book',
+      data: [
+        {
+          range: 'Exams!A1:B3',
+          values: [
+            ['Student ID', 'Score'],
+            ['S001', '95'],
+            ['S002', '88'],
+          ],
+        },
+      ],
+    };
+
+    await expect(
+      gateway.verifyOperation(
+        'batch_update_values',
+        arguments_,
+        {},
+        {
+          affectedResources: [],
+          preview: { kind: 'values', before: [], after: [] },
+          riskInspection: {},
+          driveRevisions: {},
+          state: {},
+        }
+      )
+    ).resolves.toBe(true);
   });
 
   it('preflights both copy spreadsheets and verifies the copied sheet in the destination', async () => {
@@ -301,6 +360,38 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     ).resolves.toBe(false);
   });
 
+  it('accepts Google color responses that omit zero-valued channels', async () => {
+    const { gateway } = verificationFixture({
+      metadata: {
+        sheets: [
+          {
+            properties: { sheetId: 1, title: 'Plan' },
+            data: [
+              {
+                rowData: {
+                  values: [{ userEnteredFormat: { backgroundColor: { red: 1 } } }],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    await expect(
+      gateway.verifyOperation(
+        'format_cells',
+        {
+          spreadsheetId: 'book',
+          range: 'Plan!A1',
+          format: { backgroundColor: { red: 1, green: 0, blue: 0 } },
+        },
+        {},
+        verificationPreflight()
+      )
+    ).resolves.toBe(true);
+  });
+
   it('rejects a chart update whose requested chart post-state is absent', async () => {
     const { gateway } = verificationFixture({
       version: '8',
@@ -431,10 +522,9 @@ describe('GoogleSheetsGateway retained-handler context', () => {
         verificationPreflight()
       )
     ).resolves.toBe(true);
-    expect(batchGet).toHaveBeenCalledWith(
-      expect.objectContaining({ ranges: ['Plan!A2:B2'] }),
-      { retry: false }
-    );
+    expect(batchGet).toHaveBeenCalledWith(expect.objectContaining({ ranges: ['Plan!A2:B2'] }), {
+      retry: false,
+    });
   });
 
   it('retains only headers and the relevant tail as append preflight evidence', async () => {
@@ -617,7 +707,7 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     expect(append).toHaveBeenCalledWith({ spreadsheetId: 'book' }, { retry: false });
   });
 
-  it.each(['value', 'chart', 'table', 'grid']) (
+  it.each(['value', 'chart', 'table', 'grid'])(
     'forces reviewed %s application writes to one attempt even when the handler requests retries',
     async (family) => {
       const write = vi.fn().mockRejectedValue({ code: 503, message: 'unavailable' });
@@ -864,12 +954,14 @@ describe('GoogleSheetsGateway retained-handler context', () => {
 
   it('registers a root-created spreadsheet before returning it', async () => {
     const registerCreatedSpreadsheet = vi.fn();
-    const fetcher = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({ spreadsheetId: 'root-book', properties: { title: 'Root book' } }),
-        { status: 200 }
-      )
-    );
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ spreadsheetId: 'root-book', properties: { title: 'Root book' } }),
+          { status: 200 }
+        )
+      );
     const gateway = new GoogleSheetsGateway(
       TOKENS,
       'client-id',

@@ -211,6 +211,44 @@ function normalizedValues(values: unknown): unknown[][] {
   return rows;
 }
 
+function equivalentCellValue(actual: unknown, expected: unknown): boolean {
+  if (Object.is(actual, expected)) {
+    return true;
+  }
+  if (
+    (actual === null || actual === undefined || actual === '') &&
+    (expected === null || expected === undefined || expected === '')
+  ) {
+    return true;
+  }
+  if (typeof actual === 'number' && typeof expected === 'string' && expected.trim() !== '') {
+    return Number.isFinite(Number(expected)) && actual === Number(expected);
+  }
+  if (typeof expected === 'number' && typeof actual === 'string' && actual.trim() !== '') {
+    return Number.isFinite(Number(actual)) && expected === Number(actual);
+  }
+  if (typeof actual === 'boolean' && typeof expected === 'string') {
+    return actual === (expected.toUpperCase() === 'TRUE');
+  }
+  if (typeof expected === 'boolean' && typeof actual === 'string') {
+    return expected === (actual.toUpperCase() === 'TRUE');
+  }
+  return false;
+}
+
+function equivalentValueGrid(actual: unknown[][], expected: unknown[][]): boolean {
+  return (
+    actual.length >= expected.length &&
+    expected.every((row, rowIndex) => {
+      const actualRow = actual[rowIndex] ?? [];
+      return (
+        actualRow.length >= row.length &&
+        row.every((value, columnIndex) => equivalentCellValue(actualRow[columnIndex], value))
+      );
+    })
+  );
+}
+
 function partialMatch(actual: unknown, expected: unknown): boolean {
   if (Array.isArray(expected)) {
     return (
@@ -223,8 +261,19 @@ function partialMatch(actual: unknown, expected: unknown): boolean {
     if (!actual || typeof actual !== 'object') {
       return false;
     }
+    const colorChannels = new Set(['red', 'green', 'blue', 'alpha']);
+    const expectedKeys = Object.keys(expected as Record<string, unknown>);
+    const isColor = expectedKeys.some((key) => colorChannels.has(key));
     return Object.entries(expected).every(([key, value]) =>
-      partialMatch((actual as Record<string, unknown>)[key], value)
+      partialMatch(
+        isColor &&
+          colorChannels.has(key) &&
+          ((actual as Record<string, unknown>)[key] === undefined ||
+            (actual as Record<string, unknown>)[key] === null)
+          ? 0
+          : (actual as Record<string, unknown>)[key],
+        value
+      )
     );
   }
   return Object.is(actual ?? null, expected ?? null);
@@ -1371,9 +1420,8 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
           : ((arguments_.data as Array<{ values?: unknown[][] }> | undefined) ?? []).map(
               (entry) => entry.values ?? []
             );
-      return (
-        JSON.stringify(actual.map((entry) => normalizedValues(entry.values))) ===
-        JSON.stringify(expected.map((values) => normalizedValues(values)))
+      return actual.every((entry, index) =>
+        equivalentValueGrid(normalizedValues(entry.values), normalizedValues(expected[index] ?? []))
       );
     }
     if (operation === 'append_values') {
