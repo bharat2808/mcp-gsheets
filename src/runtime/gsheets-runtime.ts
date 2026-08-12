@@ -475,6 +475,19 @@ export class GSheetsRuntime {
         before: displayBeforeValues ?? expectedValues ?? null,
         after: input.values,
       },
+      presentation: {
+        spreadsheetName: details.spreadsheet.name,
+        valueSections: [
+          {
+            worksheetName: sheet.title,
+            range: input.rowNumber
+              ? `${sheet.title}!${input.rowNumber}:${input.rowNumber}`
+              : sheet.title,
+            before: displayBeforeValues ?? expectedValues ?? null,
+            after: input.values,
+          },
+        ],
+      },
       riskInspection: {},
       driveRevisions: { [input.spreadsheetId]: baseRevision },
       state: preflightState,

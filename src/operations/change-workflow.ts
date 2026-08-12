@@ -4,6 +4,7 @@ import {
   ChangeApplicationResult,
   ChangePreview,
   ChangeProposal,
+  ProposalPresentationData,
   ProposalManager,
 } from '../proposals/proposal-manager.js';
 import {
@@ -17,6 +18,7 @@ export interface OperationPreflight {
   preview: ChangePreview;
   riskInspection: RiskInspection;
   driveRevisions: Record<string, string>;
+  presentation?: ProposalPresentationData;
   state: unknown;
 }
 
@@ -159,6 +161,7 @@ export class ChangeWorkflow {
           riskReasons: classification.reasons,
           driveRevisions: preflight.driveRevisions,
           editable: preflight.preview.kind === 'values',
+          ...(preflight.presentation ? { presentation: preflight.presentation } : {}),
           preflightState: preflight.state,
         });
         this.#executors.set(proposal.id, {

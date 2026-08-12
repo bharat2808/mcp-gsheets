@@ -25,6 +25,18 @@ export interface ChangePreview {
   after: unknown;
 }
 
+export interface ValuePresentationSection {
+  worksheetName: string;
+  range: string;
+  before: unknown[][] | Record<string, CellValue> | null;
+  after: unknown[][] | Record<string, CellValue>;
+}
+
+export interface ProposalPresentationData {
+  spreadsheetName: string;
+  valueSections: ValuePresentationSection[];
+}
+
 export interface ChangeApplicationResult {
   data: unknown;
   verificationState: Exclude<VerificationState, 'not_started'>;
@@ -39,6 +51,7 @@ export interface ChangeRequest {
   riskReasons: string[];
   driveRevisions: Record<string, string>;
   editable: boolean;
+  presentation?: ProposalPresentationData;
   preflightState?: unknown;
 }
 

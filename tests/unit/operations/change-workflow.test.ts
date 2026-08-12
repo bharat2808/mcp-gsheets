@@ -189,6 +189,41 @@ describe('ChangeWorkflow', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('preserves value presentation metadata on reviewed proposals', async () => {
+    const dependencies = fixture();
+    dependencies.gateway.inspect.mockResolvedValue({
+      affectedResources: [{ kind: 'spreadsheet', id: 'book', label: 'School Records' }],
+      preview: { kind: 'values', before: [['Open']], after: [['Paid']] },
+      presentation: {
+        spreadsheetName: 'School Records',
+        valueSections: [
+          {
+            worksheetName: 'Accounts',
+            range: 'Accounts!D4',
+            before: [['Open']],
+            after: [['Paid']],
+          },
+        ],
+      },
+      riskInspection: { targetCellsPopulated: true },
+      driveRevisions: { book: '7' },
+      state: {},
+    });
+    const workflow = new ChangeWorkflow(dependencies);
+
+    const outcome = await workflow.execute({ ...input, execute: vi.fn() });
+
+    expect(outcome).toMatchObject({
+      kind: 'proposal',
+      proposal: {
+        presentation: {
+          spreadsheetName: 'School Records',
+          valueSections: [{ worksheetName: 'Accounts', range: 'Accounts!D4' }],
+        },
+      },
+    });
+  });
+
   it('marks reviewed application execution so retry policy can force a single attempt', async () => {
     const dependencies = fixture();
     const execute = vi.fn().mockResolvedValue({ updatedRange: 'Plan!A2' });

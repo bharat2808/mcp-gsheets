@@ -1251,10 +1251,20 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
     const affectedResources = extractOperationResources(operation, resourceArguments);
     const driveRevisions = await this.getRevisions(spreadsheetResourceIds(affectedResources));
 
+    const valueOperation = [
+      'update_values',
+      'batch_update_values',
+      'append_values',
+      'prepare_row_change',
+    ].includes(operation);
+
     let gridShrinks = false;
     let metadataState: unknown;
-    if (METADATA_STATE_OPERATIONS.has(operation) && spreadsheetId) {
-      metadataState = await this.#readVerificationMetadata(spreadsheetId, ranges);
+    if ((METADATA_STATE_OPERATIONS.has(operation) || valueOperation) && spreadsheetId) {
+      metadataState = await this.#readVerificationMetadata(
+        spreadsheetId,
+        METADATA_STATE_OPERATIONS.has(operation) ? ranges : []
+      );
     }
     const destinationMetadataState =
       operation === 'copy_to' && typeof arguments_.destinationSpreadsheetId === 'string'
@@ -1278,12 +1288,6 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       metadataState = await this.#driveFile(spreadsheetId);
     }
 
-    const valueOperation = [
-      'update_values',
-      'batch_update_values',
-      'append_values',
-      'prepare_row_change',
-    ].includes(operation);
     const appendEvidence =
       operation === 'append_values' ? appendPreflightEvidence(valueRanges[0]) : null;
     let before: unknown = valueOperation
@@ -1313,9 +1317,36 @@ export class GoogleSheetsGateway implements SheetsReadGateway {
       before = { worksheets: requestedIds.flatMap((sheetId) => byId.get(sheetId) ?? []) };
       after = { deletedSheetIds: requestedIds };
     }
+    const metadata = metadataState as
+      | { properties?: { title?: string }; sheets?: Array<{ properties?: { title?: string } }> }
+      | undefined;
+    const presentation =
+      valueOperation && spreadsheetId
+        ? {
+            spreadsheetName: metadata?.properties?.title ?? spreadsheetId,
+            valueSections: ranges.map((range, index) => {
+              const worksheetName =
+                extractSheetName(range).sheetName ??
+                metadata?.sheets?.[0]?.properties?.title ??
+                'Sheet';
+              const requestedAfter =
+                operation === 'batch_update_values'
+                  ? ((arguments_.data as Array<{ values?: unknown[][] }> | undefined)?.[index]
+                      ?.values ?? [])
+                  : ((arguments_.values as unknown[][] | undefined) ?? []);
+              return {
+                worksheetName,
+                range,
+                before: valueRanges[index]?.values ?? [],
+                after: requestedAfter,
+              };
+            }),
+          }
+        : undefined;
     return {
       affectedResources,
       preview: { kind: valueOperation ? 'values' : 'exact', before, after },
+      ...(presentation ? { presentation } : {}),
       riskInspection: {
         targetCellsVerifiedEmpty:
           ranges.length > 0 && valueRanges.every((entry) => !anyPopulated(entry.values)),

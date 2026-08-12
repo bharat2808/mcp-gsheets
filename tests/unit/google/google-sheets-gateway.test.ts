@@ -58,6 +58,9 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     const batchGet = vi.fn().mockResolvedValue({
       data: { valueRanges: [{ range: 'Plan!A2:B3', values: [] }] },
     });
+    const get = vi.fn().mockResolvedValue({
+      data: { properties: { title: 'Plan book' }, sheets: [{ properties: { title: 'Plan' } }] },
+    });
     const fetcher = vi
       .fn()
       .mockResolvedValue(new Response(JSON.stringify({ version: '7' }), { status: 200 }));
@@ -69,7 +72,7 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       fetcher,
       Date.now,
       {
-        sheetsClient: { spreadsheets: { values: { batchGet } } } as any,
+        sheetsClient: { spreadsheets: { get, values: { batchGet } } } as any,
         authorizeSpreadsheet: async () => {},
       }
     );
@@ -93,6 +96,68 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     );
     expect(preflight.riskInspection.targetCellsVerifiedEmpty).toBe(true);
     expect(preflight.preview).toMatchObject({ kind: 'values', before: [] });
+  });
+
+  it('describes spreadsheet and worksheet table sections for batch value review', async () => {
+    const batchGet = vi.fn().mockResolvedValue({
+      data: {
+        valueRanges: [
+          { range: 'Students!A2:B2', values: [['S001', 'Asha']] },
+          { range: 'Exams!A2:B2', values: [['S001', 88]] },
+        ],
+      },
+    });
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        properties: { title: 'School Records' },
+        sheets: [
+          { properties: { sheetId: 1, title: 'Students' } },
+          { properties: { sheetId: 2, title: 'Exams' } },
+        ],
+      },
+    });
+    const gateway = new GoogleSheetsGateway(
+      TOKENS,
+      'client-id',
+      'client-secret',
+      vi.fn(),
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ version: '7' }), { status: 200 })),
+      Date.now,
+      {
+        sheetsClient: { spreadsheets: { get, values: { batchGet } } } as any,
+        authorizeSpreadsheet: async () => {},
+      }
+    );
+
+    const preflight = await gateway.inspectOperation(
+      'batch_update_values',
+      {
+        spreadsheetId: 'book',
+        data: [
+          { range: 'Students!A2:B2', values: [['S001', 'Asha Sharma']] },
+          { range: 'Exams!A2:B2', values: [['S001', 95]] },
+        ],
+      },
+      []
+    );
+
+    expect(preflight.presentation).toEqual({
+      spreadsheetName: 'School Records',
+      valueSections: [
+        {
+          worksheetName: 'Students',
+          range: 'Students!A2:B2',
+          before: [['S001', 'Asha']],
+          after: [['S001', 'Asha Sharma']],
+        },
+        {
+          worksheetName: 'Exams',
+          range: 'Exams!A2:B2',
+          before: [['S001', 88]],
+          after: [['S001', 95]],
+        },
+      ],
+    });
   });
 
   it('verifies USER_ENTERED batch values after Google coerces scalar types', async () => {
@@ -535,6 +600,9 @@ describe('GoogleSheetsGateway retained-handler context', () => {
     const batchGet = vi.fn().mockResolvedValue({
       data: { valueRanges: [{ range: 'Plan!A:B', values: rows }] },
     });
+    const get = vi.fn().mockResolvedValue({
+      data: { properties: { title: 'Plan book' }, sheets: [{ properties: { title: 'Plan' } }] },
+    });
     const gateway = new GoogleSheetsGateway(
       TOKENS,
       'client-id',
@@ -543,7 +611,7 @@ describe('GoogleSheetsGateway retained-handler context', () => {
       vi.fn().mockResolvedValue(new Response(JSON.stringify({ version: '7' }))),
       Date.now,
       {
-        sheetsClient: { spreadsheets: { values: { batchGet } } } as any,
+        sheetsClient: { spreadsheets: { get, values: { batchGet } } } as any,
         authorizeSpreadsheet: async () => {},
       }
     );
