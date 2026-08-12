@@ -95,6 +95,62 @@ describe('gsheets operation registry', () => {
     });
   });
 
+  it('opens the same confirmation UI for reviewed batch value edits', async () => {
+    const proposal = {
+      version: 2,
+      id: '11111111-1111-4111-8111-111111111111',
+      nonce: 'app-only-secret-token-that-is-long-enough',
+      status: 'pending',
+      presentation: {
+        spreadsheetName: 'School Records',
+        valueSections: [
+          { worksheetName: 'Students', range: 'Students!A2:B2', before: [], after: [['S001']] },
+          { worksheetName: 'Exams', range: 'Exams!A2:B2', before: [], after: [['S001']] },
+        ],
+      },
+    };
+    const runtime = {
+      executeRetainedOperation: vi.fn().mockResolvedValue(proposal),
+      confirmationToken: vi.fn().mockReturnValue(proposal.nonce),
+    };
+    const operation = OPERATIONS.find((candidate) => candidate.name === 'batch_update_values');
+
+    const response = (await operation!.handler(runtime as any, {
+      spreadsheetId: 'book',
+      data: [],
+    })) as any;
+
+    expect(response.structuredContent.data.presentation.valueSections).toHaveLength(2);
+    expect(response._meta).toMatchObject({
+      'ui/resourceUri': 'ui://gsheets/review.html',
+      'gsheets/confirmationToken': proposal.nonce,
+    });
+  });
+
+  it('returns terminal proposals to the UI without issuing another token', async () => {
+    const proposal = {
+      version: 2,
+      id: '11111111-1111-4111-8111-111111111111',
+      nonce: '',
+      status: 'expired',
+    };
+    const runtime = {
+      review: vi.fn().mockReturnValue(proposal),
+      confirmationToken: vi.fn(() => {
+        throw new Error('must not issue a terminal token');
+      }),
+    };
+    const operation = OPERATIONS.find((candidate) => candidate.name === 'review_change');
+
+    const response = (await operation!.handler(runtime as any, {
+      proposalId: proposal.id,
+    })) as any;
+
+    expect(response.structuredContent.data).toMatchObject({ status: 'expired' });
+    expect(response._meta).toEqual({ 'ui/resourceUri': 'ui://gsheets/review.html' });
+    expect(runtime.confirmationToken).not.toHaveBeenCalled();
+  });
+
   it('routes sign-out only to reviewed preparation and defaults grant revocation off', async () => {
     const proposal = { version: 2, id: 'proposal', nonce: 'secret' };
     const runtime = {

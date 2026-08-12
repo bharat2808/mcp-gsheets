@@ -61,12 +61,12 @@ function isChangeProposal(value: unknown): value is ChangeProposal {
 }
 
 function proposalResult(runtime: GSheetsRuntime, proposal: ChangeProposal, includeNonce = true) {
-  return result(
-    publicChangeProposal(proposal),
-    includeNonce
+  return result(publicChangeProposal(proposal), {
+    'ui/resourceUri': UI_URI,
+    ...(includeNonce && proposal.status === 'pending'
       ? { 'gsheets/confirmationToken': runtime.confirmationToken(proposal.id) }
-      : undefined
-  );
+      : {}),
+  });
 }
 
 function operationResult(runtime: GSheetsRuntime, value: unknown) {
