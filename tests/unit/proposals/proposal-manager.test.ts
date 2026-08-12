@@ -156,6 +156,62 @@ describe('ProposalManager', () => {
     expect(() => manager.edit(structural.id, [['anything']])).toThrow('not editable');
   });
 
+  it('edits every batch range atomically and refreshes presentation sections', () => {
+    const gateway = { getRevisions: vi.fn(), captureState: vi.fn(), apply: vi.fn() };
+    const manager = new ProposalManager(gateway);
+    const proposal = manager.prepare({
+      ...baseRequest,
+      operation: 'batch_update_values',
+      arguments: {
+        spreadsheetId: 'spreadsheet-1',
+        data: [
+          { range: 'Students!A2:B2', values: [['S001', 'Asha']] },
+          { range: 'Exams!A2:B2', values: [['S001', 88]] },
+        ],
+      },
+      preview: {
+        kind: 'values',
+        before: [],
+        after: [
+          { range: 'Students!A2:B2', values: [['S001', 'Asha']] },
+          { range: 'Exams!A2:B2', values: [['S001', 88]] },
+        ],
+      },
+      presentation: {
+        spreadsheetName: 'School Records',
+        valueSections: [
+          {
+            worksheetName: 'Students',
+            range: 'Students!A2:B2',
+            before: [['S001', 'Asha']],
+            after: [['S001', 'Asha']],
+          },
+          {
+            worksheetName: 'Exams',
+            range: 'Exams!A2:B2',
+            before: [['S001', 88]],
+            after: [['S001', 88]],
+          },
+        ],
+      },
+    });
+    const firstNonce = manager.confirmationToken(proposal.id);
+    const values = [
+      { range: 'Students!A2:B2', values: [['S001', 'Asha Sharma']] },
+      { range: 'Exams!A2:B2', values: [['S001', 95]] },
+    ];
+
+    const edited = manager.edit(proposal.id, values);
+
+    expect(edited.arguments.data).toEqual(values);
+    expect(edited.preview.after).toEqual(values);
+    expect(edited.presentation?.valueSections.map((section) => section.after)).toEqual([
+      [['S001', 'Asha Sharma']],
+      [['S001', 95]],
+    ]);
+    expect(manager.confirmationToken(proposal.id)).not.toBe(firstNonce);
+  });
+
   it('uses a distinct applied-verification-pending lifecycle state', async () => {
     const gateway = {
       getRevisions: vi.fn().mockResolvedValue(baseRequest.driveRevisions),

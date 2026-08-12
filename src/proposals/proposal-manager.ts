@@ -87,6 +87,19 @@ function equalState(first: unknown, second: unknown): boolean {
 
 function editedArguments(proposal: ChangeProposal, values: unknown): Record<string, unknown> {
   if (proposal.operation === 'batch_update_values') {
+    if (!Array.isArray(values)) {
+      throw new Error('Batch proposal edits require an ordered range list');
+    }
+    const sections = proposal.presentation?.valueSections ?? [];
+    if (values.length !== sections.length) {
+      throw new Error('Batch proposal edits must include every proposed range');
+    }
+    values.forEach((entry, index) => {
+      const candidate = entry as { range?: unknown; values?: unknown };
+      if (candidate.range !== sections[index]?.range || !Array.isArray(candidate.values)) {
+        throw new Error('Batch proposal edit ranges must match the reviewed proposal');
+      }
+    });
     return { ...proposal.arguments, data: structuredClone(values) };
   }
   if (proposal.operation === 'prepare_row_change') {
@@ -160,8 +173,25 @@ export class ProposalManager {
     if (!proposal.editable || proposal.preview.kind !== 'values') {
       throw new Error('This structural or destructive proposal is not editable');
     }
+    const arguments_ = editedArguments(proposal, values);
+    const presentation = proposal.presentation
+      ? structuredClone(proposal.presentation)
+      : undefined;
+    if (presentation) {
+      if (proposal.operation === 'batch_update_values') {
+        const entries = values as Array<{ values: unknown[][] }>;
+        presentation.valueSections.forEach((section, index) => {
+          section.after = structuredClone(entries[index]?.values ?? []);
+        });
+      } else if (presentation.valueSections[0]) {
+        presentation.valueSections[0].after = structuredClone(
+          values as unknown[][] | Record<string, CellValue>
+        );
+      }
+    }
     proposal.preview.after = structuredClone(values);
-    proposal.arguments = editedArguments(proposal, values);
+    proposal.arguments = arguments_;
+    if (presentation) proposal.presentation = presentation;
     proposal.visuallyConfirmed = false;
     proposal.nonce = randomBytes(32).toString('base64url');
     return structuredClone(proposal);
