@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   useApp,
@@ -7,13 +7,19 @@ import {
 } from '@modelcontextprotocol/ext-apps/react';
 
 import {
-  parseEditableProposalValues,
   PROPOSAL_ACTION_TOOLS,
   proposalActionSuccessMessage,
   proposalPresentation,
   proposalSecurityStateAfterResponse,
   proposalSecurityStateBeforeAction,
+  proposalUiState,
 } from './proposal-action-contract.js';
+import {
+  EditableTableSection,
+  editableValuesForOperation,
+  proposalTableModel,
+  updateTableCell,
+} from './proposal-table-model.js';
 import './styles.css';
 
 interface Proposal {
@@ -22,10 +28,25 @@ interface Proposal {
   operation: string;
   arguments: Record<string, unknown>;
   affectedResources: Array<{ kind: string; id: string; label: string }>;
+  presentation?: {
+    spreadsheetName: string;
+    valueSections: Array<{
+      worksheetName: string;
+      range: string;
+      before: unknown[][] | Record<string, unknown> | null;
+      after: unknown[][] | Record<string, unknown>;
+    }>;
+  };
   preview: { kind: 'values' | 'exact'; before: unknown; after: unknown };
   riskReasons: string[];
   editable: boolean;
-  status: 'pending' | 'applied' | 'applied_verification_pending' | 'cancelled';
+  status:
+    | 'pending'
+    | 'applying'
+    | 'applied'
+    | 'applied_verification_pending'
+    | 'cancelled'
+    | 'expired';
   verificationState: 'not_started' | 'verified' | 'applied_verification_pending';
   expiresAt: string;
   result?: { data: unknown; verificationError?: string };
@@ -44,15 +65,27 @@ function pretty(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? 'null';
 }
 
+function cellText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return typeof value === 'object' ? pretty(value) : String(value);
+}
+
+function countdown(milliseconds: number): string {
+  const seconds = Math.ceil(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
 function ReviewApp() {
   useHostStyleVariables();
   useDocumentTheme();
   const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [draft, setDraft] = useState('');
+  const [tableSections, setTableSections] = useState<EditableTableSection[]>([]);
   const [confirmed, setConfirmed] = useState(false);
   const [confirmationToken, setConfirmationToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [now, setNow] = useState(Date.now());
   const { app, isConnected, error } = useApp({
     appInfo: { name: 'GSheets review', version: '0.2.0' },
     capabilities: {},
@@ -61,7 +94,7 @@ function ReviewApp() {
         const next = proposalFrom(params.structuredContent);
         if (next) {
           setProposal(next);
-          setDraft(pretty(next.preview.after));
+          setTableSections(proposalTableModel(next));
           const security = proposalSecurityStateAfterResponse(
             { confirmed, confirmationToken },
             params._meta?.['gsheets/confirmationToken']
@@ -73,11 +106,13 @@ function ReviewApp() {
     },
   });
 
-  const expires = useMemo(
-    () => (proposal ? new Date(proposal.expiresAt).toLocaleTimeString() : ''),
-    [proposal]
-  );
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const presentation = proposal ? proposalPresentation(proposal) : null;
+  const uiState = proposal ? proposalUiState(proposal.status, proposal.expiresAt, now) : null;
 
   async function call(name: string, arguments_: Record<string, unknown>) {
     if (!app) return;
@@ -92,7 +127,7 @@ function ReviewApp() {
       const next = proposalFrom(response.structuredContent);
       if (next) {
         setProposal(next);
-        setDraft(pretty(next.preview.after));
+        setTableSections(proposalTableModel(next));
         const security = proposalSecurityStateAfterResponse(
           { confirmed, confirmationToken },
           response._meta?.['gsheets/confirmationToken']
@@ -121,7 +156,7 @@ function ReviewApp() {
         <p>Connecting to GSheets…</p>
       </main>
     );
-  if (!proposal || !presentation)
+  if (!proposal || !presentation || !uiState)
     return (
       <main>
         <h1>Review change</h1>
@@ -136,12 +171,27 @@ function ReviewApp() {
           <span className="eyebrow">Google Sheets</span>
           <h1>{presentation.title}</h1>
         </div>
-        <span className={`status ${proposal.status}`}>{proposal.status.replaceAll('_', ' ')}</span>
+        <span className={`status ${uiState.statusLabel.toLowerCase().replaceAll(' ', '-')}`}>
+          {uiState.statusLabel}
+        </span>
       </header>
       <p className="location">
-        {proposal.affectedResources.map((resource) => resource.label).join(' → ')} · expires at{' '}
-        {expires}
+        <strong>{proposal.presentation?.spreadsheetName ?? 'Google Sheets spreadsheet'}</strong>
+        {proposal.status === 'pending' && !uiState.terminal ? (
+          <span className="countdown"> · approval expires in {countdown(uiState.remainingMs)}</span>
+        ) : null}
       </p>
+      {proposal.presentation?.valueSections.length ? (
+        <p className="source">
+          {proposal.presentation.valueSections
+            .map((section) => `${section.worksheetName} · ${section.range}`)
+            .join(' | ')}
+        </p>
+      ) : (
+        <p className="source">
+          {proposal.affectedResources.map((resource) => resource.label).join(' → ')}
+        </p>
+      )}
       <section className="risks" aria-label="Why review is required">
         <h2>Why this needs review</h2>
         <ul>
@@ -150,75 +200,141 @@ function ReviewApp() {
           ))}
         </ul>
       </section>
-      <section>
-        <div className="preview-grid">
-          <div>
-            <h2>Before</h2>
-            <pre>{pretty(proposal.preview.before)}</pre>
-          </div>
-          <div>
-            <h2>After</h2>
-            {presentation.editable ? (
-              <textarea
-                aria-label="Proposed values"
-                value={draft}
-                rows={12}
-                onChange={(event) => {
-                  setDraft(event.target.value);
-                  setConfirmed(false);
-                }}
-              />
-            ) : (
+      {presentation.editable && tableSections.length > 0 ? (
+        tableSections.map((section, sectionIndex) => (
+          <section className="table-section" key={`${section.range}:${sectionIndex}`}>
+            <div className="table-title">
+              <h2>{section.worksheetName}</h2>
+              <span>{section.range}</span>
+            </div>
+            <div className="table-comparison">
+              <div>
+                <h3>Before</h3>
+                <div className="table-scroll">
+                  <table className="value-table">
+                    <thead>
+                      <tr>
+                        <th aria-label="Row number">#</th>
+                        {section.columns.map((column) => (
+                          <th key={column}>{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {section.before.map((row, rowIndex) => (
+                        <tr key={rowIndex}>
+                          <th>{rowIndex + 1}</th>
+                          {row.map((cell, columnIndex) => (
+                            <td className="before-cell" key={columnIndex}>
+                              {cellText(cell)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div>
+                <h3>Proposed</h3>
+                <div className="table-scroll">
+                  <table className="value-table">
+                    <thead>
+                      <tr>
+                        <th aria-label="Row number">#</th>
+                        {section.columns.map((column) => (
+                          <th key={column}>{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {section.after.map((row, rowIndex) => (
+                        <tr key={rowIndex}>
+                          <th>{rowIndex + 1}</th>
+                          {row.map((cell, columnIndex) => (
+                            <td className="after-cell" key={columnIndex}>
+                              <input
+                                aria-label={`${section.worksheetName} ${section.range} row ${rowIndex + 1} column ${section.columns[columnIndex]}`}
+                                value={cellText(cell)}
+                                disabled={busy || uiState.terminal}
+                                onChange={(event) => {
+                                  setTableSections((current) =>
+                                    updateTableCell(
+                                      current,
+                                      sectionIndex,
+                                      rowIndex,
+                                      columnIndex,
+                                      event.target.value
+                                    )
+                                  );
+                                  setConfirmed(false);
+                                }}
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+        ))
+      ) : (
+        <section>
+          <div className="preview-grid">
+            <div>
+              <h2>Before</h2>
+              <pre>{pretty(proposal.preview.before)}</pre>
+            </div>
+            <div>
+              <h2>After</h2>
               <pre>{pretty(proposal.preview.after)}</pre>
-            )}
+            </div>
           </div>
-        </div>
-      </section>
-      {proposal.status === 'pending' && (
-        <>
-          <label className="confirm">
-            <input
-              type="checkbox"
-              checked={confirmed}
-              onChange={(event) => setConfirmed(event.target.checked)}
-            />{' '}
-            I reviewed the before and after state and want to apply this exact change.
-          </label>
-          <div className="actions">
+        </section>
+      )}
+      <>
+        <label className="confirm">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            disabled={busy || uiState.terminal}
+            onChange={(event) => setConfirmed(event.target.checked)}
+          />{' '}
+          I reviewed the before and after state and want to apply this exact change.
+        </label>
+        <div className="actions">
+          <button
+            className="secondary"
+            disabled={busy || uiState.terminal}
+            onClick={() => call(PROPOSAL_ACTION_TOOLS.cancel, { proposalId: proposal.id })}
+          >
+            Cancel
+          </button>
+          {presentation.editable && (
             <button
               className="secondary"
-              disabled={busy}
-              onClick={() => call(PROPOSAL_ACTION_TOOLS.cancel, { proposalId: proposal.id })}
+              disabled={busy || uiState.terminal}
+              onClick={() => {
+                const values = editableValuesForOperation(proposal.operation, tableSections);
+                void call(PROPOSAL_ACTION_TOOLS.edit, { proposalId: proposal.id, values });
+              }}
             >
-              Cancel
+              Save edits
             </button>
-            {presentation.editable && (
-              <button
-                className="secondary"
-                disabled={busy}
-                onClick={() => {
-                  try {
-                    const values = parseEditableProposalValues(draft, proposal.preview.kind);
-                    void call(PROPOSAL_ACTION_TOOLS.edit, { proposalId: proposal.id, values });
-                  } catch (caught) {
-                    setMessage(caught instanceof Error ? caught.message : String(caught));
-                  }
-                }}
-              >
-                Save edits
-              </button>
-            )}
-            <button
-              disabled={busy || !confirmed || !confirmationToken}
-              onClick={() =>
-                call(PROPOSAL_ACTION_TOOLS.approve, { proposalId: proposal.id, confirmationToken })
-              }
-            >
-              Apply change
-            </button>
-          </div>
-        </>
-      )}
+          )}
+          <button
+            disabled={busy || uiState.terminal || !confirmed || !confirmationToken}
+            onClick={() =>
+              call(PROPOSAL_ACTION_TOOLS.approve, { proposalId: proposal.id, confirmationToken })
+            }
+          >
+            Apply change
+          </button>
+        </div>
+      </>
       {proposal.verificationState === 'applied_verification_pending' && (
         <p className="message pending" role="alert">
           Applied, but verification is pending. Dependent destructive work is blocked until refresh

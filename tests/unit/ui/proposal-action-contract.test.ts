@@ -7,6 +7,7 @@ import {
   parseEditableProposalValues,
   proposalSecurityStateAfterResponse,
   proposalSecurityStateBeforeAction,
+  proposalUiState,
 } from '../../../ui/src/proposal-action-contract.js';
 
 describe('proposal review action contract', () => {
@@ -70,5 +71,32 @@ describe('proposal review action contract', () => {
         'edit_change'
       )
     ).toEqual({ confirmed: false, confirmationToken: '' });
+  });
+
+  it('shows a live pending countdown and expires at the exact deadline', () => {
+    expect(
+      proposalUiState('pending', '2026-08-12T00:04:00.000Z', Date.parse('2026-08-12T00:00:30.000Z'))
+    ).toEqual({ statusLabel: 'Pending', terminal: false, remainingMs: 210_000 });
+    expect(
+      proposalUiState('pending', '2026-08-12T00:04:00.000Z', Date.parse('2026-08-12T00:04:00.000Z'))
+    ).toEqual({ statusLabel: 'Expired', terminal: true, remainingMs: 0 });
+  });
+
+  it('makes every consumed proposal state terminal', () => {
+    expect(proposalUiState('expired', '2026-08-12T00:04:00.000Z', 0)).toMatchObject({
+      statusLabel: 'Expired',
+      terminal: true,
+    });
+    expect(proposalUiState('applied', '2026-08-12T00:04:00.000Z', 0)).toMatchObject({
+      statusLabel: 'Applied',
+      terminal: true,
+    });
+    expect(
+      proposalUiState('applied_verification_pending', '2026-08-12T00:04:00.000Z', 0)
+    ).toMatchObject({ statusLabel: 'Applied — verification pending', terminal: true });
+    expect(proposalUiState('cancelled', '2026-08-12T00:04:00.000Z', 0)).toMatchObject({
+      statusLabel: 'Cancelled',
+      terminal: true,
+    });
   });
 });

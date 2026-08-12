@@ -9,6 +9,34 @@ export interface ProposalSecurityState {
   confirmationToken: string;
 }
 
+export type ProposalUiStatus =
+  | 'pending'
+  | 'applying'
+  | 'applied'
+  | 'applied_verification_pending'
+  | 'cancelled'
+  | 'expired';
+
+export function proposalUiState(status: ProposalUiStatus, expiresAt: string, now: number) {
+  const remainingMs = Math.max(0, Date.parse(expiresAt) - now);
+  if (status === 'pending' && remainingMs > 0) {
+    return { statusLabel: 'Pending', terminal: false, remainingMs } as const;
+  }
+  const labels: Record<Exclude<ProposalUiStatus, 'pending'> | 'expired', string> = {
+    applying: 'Applying',
+    applied: 'Applied',
+    applied_verification_pending: 'Applied — verification pending',
+    cancelled: 'Cancelled',
+    expired: 'Expired',
+  };
+  const effectiveStatus = status === 'pending' ? 'expired' : status;
+  return {
+    statusLabel: labels[effectiveStatus],
+    terminal: true,
+    remainingMs: 0,
+  } as const;
+}
+
 export function proposalSecurityStateAfterResponse(
   _state: ProposalSecurityState,
   confirmationToken: unknown
