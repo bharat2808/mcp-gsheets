@@ -174,9 +174,7 @@ export class ProposalManager {
       throw new Error('This structural or destructive proposal is not editable');
     }
     const arguments_ = editedArguments(proposal, values);
-    const presentation = proposal.presentation
-      ? structuredClone(proposal.presentation)
-      : undefined;
+    const presentation = proposal.presentation ? structuredClone(proposal.presentation) : undefined;
     if (presentation) {
       if (proposal.operation === 'batch_update_values') {
         const entries = values as Array<{ values: unknown[][] }>;
@@ -191,7 +189,9 @@ export class ProposalManager {
     }
     proposal.preview.after = structuredClone(values);
     proposal.arguments = arguments_;
-    if (presentation) proposal.presentation = presentation;
+    if (presentation) {
+      proposal.presentation = presentation;
+    }
     proposal.visuallyConfirmed = false;
     proposal.nonce = randomBytes(32).toString('base64url');
     return structuredClone(proposal);
