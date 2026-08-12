@@ -49,15 +49,52 @@ describe('ProposalManager', () => {
     expect(gateway.apply).not.toHaveBeenCalled();
   });
 
-  it('expires proposals after fifteen minutes', () => {
+  it('expires proposals after exactly four minutes and retains the terminal state', () => {
     let now = Date.parse('2026-08-05T00:00:00.000Z');
     const gateway = { getRevisions: vi.fn(), captureState: vi.fn(), apply: vi.fn() };
     const manager = new ProposalManager(gateway, () => now);
     const proposal = manager.prepare(baseRequest);
-    now += 15 * 60 * 1000 + 1;
 
-    expect(() => manager.review(proposal.id)).toThrow('expired');
-    expect(() => manager.review(proposal.id)).toThrow('Unknown proposal');
+    expect(proposal.expiresAt).toBe('2026-08-05T00:04:00.000Z');
+    now += 4 * 60 * 1000;
+    expect(manager.review(proposal.id)).toMatchObject({ status: 'expired', nonce: '' });
+    expect(manager.review(proposal.id)).toMatchObject({ status: 'expired', nonce: '' });
+  });
+
+  it('rejects every repeated action after expiry or consumption', async () => {
+    let now = Date.parse('2026-08-05T00:00:00.000Z');
+    const gateway = {
+      getRevisions: vi.fn().mockResolvedValue(baseRequest.driveRevisions),
+      captureState: vi.fn().mockResolvedValue(baseRequest.preflightState),
+      apply: vi.fn().mockResolvedValue({
+        data: { updatedRange: 'Accounts!D4' },
+        verificationState: 'verified' as const,
+      }),
+    };
+    const manager = new ProposalManager(gateway, () => now);
+    const expired = manager.prepare(baseRequest);
+    const expiredToken = manager.confirmationToken(expired.id);
+    now += 4 * 60 * 1000;
+
+    expect(() => manager.edit(expired.id, [['Settled']])).toThrow('Proposal is expired');
+    expect(() => manager.recordVisualConfirmation(expired.id, expiredToken)).toThrow(
+      'Proposal is expired'
+    );
+    await expect(manager.approve(expired.id)).rejects.toThrow('Proposal is expired');
+    expect(() => manager.cancel(expired.id)).toThrow('Proposal is expired');
+
+    const applied = manager.prepare(baseRequest);
+    manager.recordVisualConfirmation(applied.id, manager.confirmationToken(applied.id));
+    await manager.approve(applied.id);
+    await expect(manager.approve(applied.id)).rejects.toThrow('Proposal is applied');
+    expect(() => manager.edit(applied.id, [['Again']])).toThrow('Proposal is applied');
+    expect(() => manager.cancel(applied.id)).toThrow('Proposal is applied');
+    expect(gateway.apply).toHaveBeenCalledOnce();
+
+    const cancelled = manager.prepare(baseRequest);
+    manager.cancel(cancelled.id);
+    expect(() => manager.cancel(cancelled.id)).toThrow('Proposal is cancelled');
+    expect(() => manager.edit(cancelled.id, [['Again']])).toThrow('Proposal is cancelled');
   });
 
   it('bounds retained proposals and prunes the oldest entries', () => {

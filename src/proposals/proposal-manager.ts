@@ -7,7 +7,8 @@ export type ProposalStatus =
   | 'applying'
   | 'applied'
   | 'applied_verification_pending'
-  | 'cancelled';
+  | 'cancelled'
+  | 'expired';
 export type VerificationState = 'not_started' | 'verified' | 'applied_verification_pending';
 export type ProposalPreviewKind = 'values' | 'exact';
 export type ResourceKind = 'account' | 'spreadsheet' | 'sheet' | 'range' | 'chart' | 'table';
@@ -64,7 +65,7 @@ export interface ProposalGateway {
   ): Promise<ChangeApplicationResult>;
 }
 
-const FIFTEEN_MINUTES = 15 * 60 * 1000;
+const FOUR_MINUTES = 4 * 60 * 1000;
 const MAX_RETAINED_PROPOSALS = 256;
 
 function equalState(first: unknown, second: unknown): boolean {
@@ -122,7 +123,7 @@ export class ProposalManager {
       status: 'pending',
       verificationState: 'not_started',
       createdAt: new Date(createdAt).toISOString(),
-      expiresAt: new Date(createdAt + FIFTEEN_MINUTES).toISOString(),
+      expiresAt: new Date(createdAt + FOUR_MINUTES).toISOString(),
       visuallyConfirmed: false,
     };
     this.#proposals.set(proposal.id, proposal);
@@ -137,7 +138,6 @@ export class ProposalManager {
 
   review(id: string): ChangeProposal {
     const proposal = this.#required(id);
-    this.#assertUsable(proposal);
     return structuredClone(proposal);
   }
 
@@ -233,12 +233,16 @@ export class ProposalManager {
     if (!proposal) {
       throw new Error(`Unknown proposal: ${id}`);
     }
-    if (proposal.status === 'pending' && this.#now() > Date.parse(proposal.expiresAt)) {
-      this.#proposals.delete(id);
-      this.#onPruned([id]);
-      throw new Error('Proposal has expired');
-    }
+    this.#expireIfNeeded(proposal);
     return proposal;
+  }
+
+  #expireIfNeeded(proposal: ChangeProposal): void {
+    if (proposal.status === 'pending' && this.#now() >= Date.parse(proposal.expiresAt)) {
+      proposal.status = 'expired';
+      proposal.visuallyConfirmed = false;
+      proposal.nonce = '';
+    }
   }
 
   #assertUsable(proposal: ChangeProposal): void {
@@ -249,11 +253,8 @@ export class ProposalManager {
 
   #prune(reservedSlots: number): void {
     const removed: string[] = [];
-    for (const [id, proposal] of this.#proposals) {
-      if (proposal.status === 'pending' && this.#now() > Date.parse(proposal.expiresAt)) {
-        this.#proposals.delete(id);
-        removed.push(id);
-      }
+    for (const proposal of this.#proposals.values()) {
+      this.#expireIfNeeded(proposal);
     }
     const targetSize = MAX_RETAINED_PROPOSALS - reservedSlots;
     while (this.#proposals.size > targetSize) {
