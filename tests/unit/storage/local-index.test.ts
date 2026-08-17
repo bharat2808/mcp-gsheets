@@ -23,7 +23,9 @@ afterEach(() => {
 });
 
 describe('LocalIndex', () => {
-  it('restricts the index directory, database, and SQLite sidecar permissions', () => {
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+
+  itPosix('restricts the index directory, database, and SQLite sidecar permissions', () => {
     const directory = mkdtempSync(join(tmpdir(), 'gsheets-index-modes-'));
     tempDirectories.push(directory);
     chmodSync(directory, 0o777);

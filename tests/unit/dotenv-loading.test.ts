@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import path from 'node:path';
 
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
 
 const INDEX_PATH = path.resolve(__dirname, '../../src/index.ts');
+const TSX_CLI_PATH = require.resolve('tsx/cli');
 
 /**
  * Spawns the server entry point with tsx and captures stderr.
@@ -24,7 +27,7 @@ async function getStderrWithEnv(nodeEnv: string | undefined): Promise<string> {
   }
 
   try {
-    const { stderr } = await execFileAsync('npx', ['tsx', INDEX_PATH], {
+    const { stderr } = await execFileAsync(process.execPath, [TSX_CLI_PATH, INDEX_PATH], {
       env,
       timeout: 6000,
       // Close stdin immediately so the process exits
