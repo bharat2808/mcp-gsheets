@@ -5,7 +5,7 @@ import { validateClearValuesInput } from '../utils/validators.js';
 import { formatClearResponse } from '../utils/formatters.js';
 
 export const clearValuesTool: Tool = {
-  name: 'sheets_clear_values',
+  name: 'clear_values',
   description: 'Clear values in a specified range of a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',

@@ -5,7 +5,7 @@ import { validateInsertSheetInput } from '../utils/validators.js';
 import { formatSheetOperationResponse } from '../utils/formatters.js';
 
 export const insertSheetTool: Tool = {
-  name: 'sheets_insert_sheet',
+  name: 'insert_sheet',
   description: 'Add a new sheet to an existing Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',

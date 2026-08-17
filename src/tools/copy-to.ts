@@ -5,7 +5,7 @@ import { validateCopyToInput } from '../utils/validators.js';
 import { formatSheetOperationResponse } from '../utils/formatters.js';
 
 export const copyToTool: Tool = {
-  name: 'sheets_copy_to',
+  name: 'copy_to',
   description: 'Copy a sheet to another Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',
@@ -16,7 +16,7 @@ export const copyToTool: Tool = {
       },
       sheetId: {
         type: 'number',
-        description: 'The ID of the sheet to copy (use sheets_get_metadata to find sheet IDs)',
+        description: 'The ID of the sheet to copy (use get_metadata to find sheet IDs)',
       },
       destinationSpreadsheetId: {
         type: 'string',

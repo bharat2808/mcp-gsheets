@@ -5,7 +5,7 @@ import { validateGetValuesInput } from '../utils/validators.js';
 import { formatValuesResponse } from '../utils/formatters.js';
 
 export const getValuesTool: Tool = {
-  name: 'sheets_get_values',
+  name: 'get_values',
   description: 'Get values from a specified range in a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',

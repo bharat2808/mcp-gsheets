@@ -42,7 +42,7 @@ const updateTableInputSchema = z
   });
 
 export const updateTableTool: Tool = {
-  name: 'sheets_update_table',
+  name: 'update_table',
   description: 'Update an existing native Google Sheets table by tableId',
   inputSchema: {
     type: 'object',

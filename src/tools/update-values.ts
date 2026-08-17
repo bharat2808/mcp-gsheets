@@ -5,7 +5,7 @@ import { validateUpdateValuesInput } from '../utils/validators.js';
 import { formatUpdateResponse } from '../utils/formatters.js';
 
 export const updateValuesTool: Tool = {
-  name: 'sheets_update_values',
+  name: 'update_values',
   description:
     'Update values in a specified range of a Google Sheets spreadsheet. ' +
     'Examples:\n' +

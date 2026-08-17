@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "gsheets": {
+      "command": "node",
+      "args": ["./dist/index.js"],
+      "cwd": ".",
+      "env_vars": [
+        "GSHEETS_GOOGLE_CLIENT_ID",
+        "GSHEETS_DATA_DIR",
+        "GSHEETS_TOOL_CATEGORIES",
+        "GSHEETS_READ_ONLY"
+      ]
+    }
+  }
+}

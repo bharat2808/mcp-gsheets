@@ -18,7 +18,7 @@ describe('handleError', () => {
       
       expect(result.content[0].type).toBe('text');
       expect(result.content[0].text).toContain('Error: Authentication failed');
-      expect(result.content[0].text).toContain('Please check that your service account credentials are valid');
+      expect(result.content[0].text).toContain('Reconnect Google from the local setup URL');
     });
 
     it('should handle 403 permission denied error', () => {
@@ -26,8 +26,8 @@ describe('handleError', () => {
       const result = handleError(error);
       
       expect(result.content[0].text).toContain('Error: Permission denied');
-      expect(result.content[0].text).toContain('Please ensure the service account has access');
-      expect(result.content[0].text).toContain('Share the spreadsheet with the service account email');
+      expect(result.content[0].text).toContain('connected Google account has access');
+      expect(result.content[0].text).toContain('Editor access');
     });
 
     it('should handle 404 not found error', () => {

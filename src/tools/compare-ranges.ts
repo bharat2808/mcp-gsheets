@@ -18,7 +18,7 @@ const inputSchema = z.object({
 });
 
 export const compareRangesTool: Tool = {
-  name: 'sheets_compare_ranges',
+  name: 'compare_ranges',
   description:
     'Compare cell formatting between two ranges of identical dimensions. ' +
     'Useful for verifying repeated patterns, e.g. "do all data rows 6–85 have identical formatting?" ' +

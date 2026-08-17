@@ -6,7 +6,7 @@ import { formatToolResponse } from '../utils/formatters.js';
 import { columnToIndex, extractSheetName, getSheetId } from '../utils/range-helpers.js';
 
 export const deleteColumnsTool: Tool = {
-  name: 'sheets_delete_columns',
+  name: 'delete_columns',
   description: 'Delete one or more columns from a Google Sheet using a full-column A1 range',
   inputSchema: {
     type: 'object',

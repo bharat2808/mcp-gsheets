@@ -9,7 +9,7 @@ import { parseJsonInput } from '../utils/json-parser.js';
 import { ToolResponse } from '../types/tools.js';
 
 export const batchFormatCellsTool: Tool = {
-  name: 'sheets_batch_format_cells',
+  name: 'batch_format_cells',
   description: 'Format multiple cell ranges in a Google Sheet in a single operation',
   inputSchema: {
     type: 'object',
@@ -30,6 +30,37 @@ export const batchFormatCellsTool: Tool = {
             format: {
               type: 'object',
               description: 'Cell format settings (colors, fonts, alignment, etc.)',
+              properties: {
+                backgroundColor: {
+                  type: 'object',
+                  properties: {
+                    red: { type: 'number' },
+                    green: { type: 'number' },
+                    blue: { type: 'number' },
+                    alpha: { type: 'number' },
+                  },
+                  additionalProperties: true,
+                },
+                textFormat: {
+                  type: 'object',
+                  properties: {
+                    foregroundColor: { type: 'object', additionalProperties: true },
+                    fontFamily: { type: 'string' },
+                    fontSize: { type: 'number' },
+                    bold: { type: 'boolean' },
+                    italic: { type: 'boolean' },
+                    strikethrough: { type: 'boolean' },
+                    underline: { type: 'boolean' },
+                  },
+                  additionalProperties: true,
+                },
+                horizontalAlignment: { type: 'string' },
+                verticalAlignment: { type: 'string' },
+                wrapStrategy: { type: 'string' },
+                numberFormat: { type: 'object', additionalProperties: true },
+                padding: { type: 'object', additionalProperties: true },
+              },
+              additionalProperties: true,
             },
           },
           required: ['range', 'format'],
@@ -124,6 +155,25 @@ export async function handleBatchFormatCells(input: any): Promise<ToolResponse> 
         cellFormat.padding = formatRequest.format.padding;
       }
 
+      const fields = Object.keys(formatRequest.format).flatMap((field) => {
+        if (field === 'textFormat' && formatRequest.format.textFormat) {
+          return Object.keys(formatRequest.format.textFormat).map(
+            (nested) => `userEnteredFormat.textFormat.${nested}`
+          );
+        }
+        if (field === 'numberFormat' && formatRequest.format.numberFormat) {
+          return Object.keys(formatRequest.format.numberFormat).map(
+            (nested) => `userEnteredFormat.numberFormat.${nested}`
+          );
+        }
+        if (field === 'padding' && formatRequest.format.padding) {
+          return Object.keys(formatRequest.format.padding).map(
+            (nested) => `userEnteredFormat.padding.${nested}`
+          );
+        }
+        return [`userEnteredFormat.${field}`];
+      });
+
       // Add the repeat cell request
       requests.push({
         repeatCell: {
@@ -131,7 +181,7 @@ export async function handleBatchFormatCells(input: any): Promise<ToolResponse> 
           cell: {
             userEnteredFormat: cellFormat,
           },
-          fields: 'userEnteredFormat',
+          fields: fields.join(','),
         },
       });
     }

@@ -5,7 +5,7 @@ import { validateSpreadsheetId } from '../utils/validators.js';
 import { formatSpreadsheetMetadata } from '../utils/formatters.js';
 
 export const getMetadataTool: Tool = {
-  name: 'sheets_get_metadata',
+  name: 'get_metadata',
   description:
     'Get metadata about a Google Sheets spreadsheet including sheet names, IDs, and properties',
   inputSchema: {

@@ -14,7 +14,7 @@ const getTablesInputSchema = z.object({
 });
 
 export const getTablesTool: Tool = {
-  name: 'sheets_get_tables',
+  name: 'get_tables',
   description: 'Read native Google Sheets tables for a spreadsheet or a specific sheet',
   inputSchema: {
     type: 'object',

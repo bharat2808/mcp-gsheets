@@ -1,0 +1,40 @@
+{
+  "name": "gsheets",
+  "version": "0.2.0+codex.20260817153038",
+  "description": "Search and safely update Google Sheets from selected owned My Drive folders.",
+  "author": {
+    "name": "bharat2808"
+  },
+  "repository": "https://github.com/bharat2808/mcp-gsheets",
+  "license": "MIT",
+  "keywords": [
+    "google-sheets",
+    "drive",
+    "spreadsheet",
+    "productivity"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GSheets",
+    "shortDescription": "Find, review, and safely change Google Sheets.",
+    "longDescription": "Catalog Google Sheets in selected owned My Drive folders, search encrypted indexed rows, and safely run values, structure, formatting, chart, and table operations with visual review for risky changes.",
+    "developerName": "bharat2808",
+    "category": "Productivity",
+    "capabilities": [
+      "Google sign-in",
+      "Sheet catalog",
+      "Indexed search",
+      "Recent changes",
+      "Risk-based visual review",
+      "Formatting, charts, and tables"
+    ],
+    "defaultPrompt": [
+      "Show me the Google Sheets in my selected Drive folders.",
+      "Search my indexed Sheets for a customer or reference number.",
+      "Prepare a row update and show me the values before writing it.",
+      "Format my report and create a chart after checking the current data."
+    ],
+    "brandColor": "#0F9D58"
+  }
+}

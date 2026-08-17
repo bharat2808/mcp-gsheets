@@ -1,64 +1,25 @@
 ---
 name: spreadsheet-management
-description: This skill should be used when the user asks about Google Sheets, spreadsheets, cells, rows, columns, charts, or data tables. Activates for reading, writing, formatting, or analyzing spreadsheet data.
+description: Use for reading, searching, changing, formatting, charting, or managing Google Sheets through the local normalized MCP surface.
 ---
 
-When the user asks about spreadsheets or data in Google Sheets, use the gsheets MCP tools.
+Call `get_connection_status` first when connection, consent, selected folders, or freshness is uncertain. OAuth credentials are entered only on the localhost setup page. If re-consent is required, explain the full Drive plus Sheets scope migration and the selected owned-My-Drive product boundary.
 
-## When to Use This Skill
+Use `get_catalog` and `explore_spreadsheet` to resolve IDs and structure, `get_values` or `batch_get_values` for live ranges, and `search` followed by `fetch` for indexed rows. Refresh with `refresh_index` when current indexed data is required.
 
-Activate when the user:
+Common operations:
 
-- Wants to read spreadsheet data ("Get data from sheet", "Read column A")
-- Needs to write data ("Update cell A1", "Add a row", "Append data")
-- Formats cells ("Make header bold", "Add borders", "Change colors")
-- Creates charts ("Create a bar chart", "Add a pie chart")
-- Manages sheets ("Create new sheet", "Delete sheet", "Copy sheet")
+| Task | Operation |
+| --- | --- |
+| Read range | `get_values` |
+| Read multiple ranges | `batch_get_values` |
+| Get workbook info | `get_metadata` |
+| Write range | `update_values` |
+| Append rows | `append_values` |
+| Insert rows | `insert_rows` |
+| Format cells | `format_cells` |
+| Add borders | `update_borders` |
+| Create chart | `create_chart` |
+| Add worksheet | `insert_sheet` |
 
-## Tools Reference
-
-| Task | Tool |
-|------|------|
-| Read range | `sheets_get_values` |
-| Read multiple | `sheets_batch_get_values` |
-| Get info | `sheets_get_metadata` |
-| Write range | `sheets_update_values` |
-| Append rows | `sheets_append_values` |
-| Insert rows | `sheets_insert_rows` |
-| Format cells | `sheets_format_cells` |
-| Borders | `sheets_update_borders` |
-| Merge | `sheets_merge_cells` |
-| Create chart | `sheets_create_chart` |
-| New sheet | `sheets_insert_sheet` |
-
-## Spreadsheet ID
-
-Found in the URL: `https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit`
-
-## Range Notation
-
-```
-Sheet1!A1:D10     # Specific range
-Sheet1!A:A        # Entire column
-Sheet1!1:1        # Entire row
-A1:D10            # First sheet, specific range
-'Sheet Name'!A1   # Sheet name with spaces
-```
-
-## Example Workflows
-
-**Read and summarize:**
-```
-sheets_get_metadata spreadsheetId="1Bxi..."
-sheets_get_values spreadsheetId="1Bxi..." range="Data!A1:F100"
-```
-
-**Format header row:**
-```
-sheets_format_cells spreadsheetId="1Bxi..." range="A1:Z1" bold=true backgroundColor="#4285f4"
-```
-
-**Create chart:**
-```
-sheets_create_chart spreadsheetId="1Bxi..." sheetId=0 chartType="BAR" dataRange="A1:B10"
-```
+Never claim a pending proposal changed Google Sheets. Ask the user to review it in the app. Do not call app-only proposal actions from the model. Respect stale-state and pending-verification errors; refresh and prepare a new proposal rather than bypassing them.

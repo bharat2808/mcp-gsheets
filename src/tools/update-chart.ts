@@ -8,7 +8,7 @@ import { parseJsonInput } from '../utils/json-parser.js';
 import { ToolResponse } from '../types/tools.js';
 
 export const updateChartTool: Tool = {
-  name: 'sheets_update_chart',
+  name: 'update_chart',
   description: 'Update an existing chart in a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',
@@ -19,7 +19,7 @@ export const updateChartTool: Tool = {
       },
       chartId: {
         type: 'number',
-        description: 'The ID of the chart to update (use sheets_get_metadata to find chart IDs)',
+        description: 'The ID of the chart to update (use get_metadata to find chart IDs)',
       },
       position: {
         type: 'object',

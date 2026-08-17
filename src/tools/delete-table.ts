@@ -12,7 +12,7 @@ const deleteTableInputSchema = z.object({
 });
 
 export const deleteTableTool: Tool = {
-  name: 'sheets_delete_table',
+  name: 'delete_table',
   description: 'Delete a native Google Sheets table by tableId',
   inputSchema: {
     type: 'object',

@@ -30,13 +30,13 @@ jobs:
       - name: Build
         run: npm run build
       
-      - name: Create archive
-        run: tar -czf mcp-gsheets-${{ github.ref_name }}.tar.gz dist package.json README.md LICENSE
+      - name: Create package archive
+        run: npm pack
       
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: mcp-gsheets-${{ github.ref_name }}.tar.gz
+          files: gsheets-local-plugin-*.tgz
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

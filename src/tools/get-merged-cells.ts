@@ -13,7 +13,7 @@ const inputSchema = z.object({
 });
 
 export const getMergedCellsTool: Tool = {
-  name: 'sheets_get_merged_cells',
+  name: 'get_merged_cells',
   description:
     'Get all merged cell ranges for a specific sheet. Returns each merge as A1 notation and GridRange coordinates.',
   inputSchema: {

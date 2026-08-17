@@ -17,7 +17,7 @@ const insertLinkInputSchema = z.object({
 export type InsertLinkInput = z.infer<typeof insertLinkInputSchema>;
 
 export const insertLinkTool: Tool = {
-  name: 'sheets_insert_link',
+  name: 'insert_link',
   description: 'Insert clickable links in Google Sheets cells with custom display text',
   inputSchema: {
     type: 'object',

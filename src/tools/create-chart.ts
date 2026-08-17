@@ -9,7 +9,7 @@ import { parseRange, extractSheetName, getSheetId } from '../utils/range-helpers
 import { ToolResponse } from '../types/tools.js';
 
 export const createChartTool: Tool = {
-  name: 'sheets_create_chart',
+  name: 'create_chart',
   description:
     'Create a chart in a Google Sheets spreadsheet. Sheet names with spaces should be quoted in ranges (e.g., "My Sheet"!A1:B5). Position uses overlayPosition with anchorCell containing sheetId, rowIndex, and columnIndex.',
   inputSchema: {

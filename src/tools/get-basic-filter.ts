@@ -13,7 +13,7 @@ const inputSchema = z.object({
 });
 
 export const getBasicFilterTool: Tool = {
-  name: 'sheets_get_basic_filter',
+  name: 'get_basic_filter',
   description:
     'Read the Basic Filter (AutoFilter) configuration for a sheet, including the filtered range, ' +
     'sort specs, and per-column filter criteria (hidden values, conditions, color filters). ' +
@@ -55,7 +55,6 @@ export async function handleGetBasicFilter(input: any): Promise<ToolResponse> {
       );
     }
 
-    // Build human-readable filter criteria from filterSpecs (preferred) or legacy criteria
     const filterCriteria: Array<{
       columnIndex: number;
       columnLetter: string;
@@ -76,19 +75,6 @@ export async function handleGetBasicFilter(input: any): Promise<ToolResponse> {
           condition: fc?.condition ?? null,
           visibleBackgroundColor: fc?.visibleBackgroundColor ?? null,
           visibleForegroundColor: fc?.visibleForegroundColor ?? null,
-        });
-      }
-    } else if (bf.criteria) {
-      for (const [colIdx, fc] of Object.entries(bf.criteria)) {
-        const idx = Number(colIdx);
-        const criteria = fc;
-        filterCriteria.push({
-          columnIndex: idx,
-          columnLetter: colIndexToLetter(idx),
-          hiddenValues: criteria.hiddenValues ?? [],
-          condition: criteria.condition ?? null,
-          visibleBackgroundColor: criteria.visibleBackgroundColor ?? null,
-          visibleForegroundColor: criteria.visibleForegroundColor ?? null,
         });
       }
     }

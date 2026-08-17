@@ -85,44 +85,6 @@ describe('handleGetBasicFilter', () => {
     expect(parsed.hasBasicFilter).toBe(false);
   });
 
-  it('should handle legacy criteria format', async () => {
-    mockSheets.spreadsheets.get.mockResolvedValue({
-      data: {
-        sheets: [
-          {
-            properties: { title: 'Sheet1', sheetId: 0 },
-            basicFilter: {
-              range: {
-                sheetId: 0,
-                startRowIndex: 0,
-                endRowIndex: 5,
-                startColumnIndex: 0,
-                endColumnIndex: 2,
-              },
-              criteria: {
-                '1': {
-                  hiddenValues: ['val1', 'val2'],
-                },
-              },
-            },
-          },
-        ],
-      },
-    });
-
-    const result = await handleGetBasicFilter({
-      spreadsheetId: 'test-id',
-      sheetName: 'Sheet1',
-    });
-
-    const text = result.content[0].text;
-    const parsed = JSON.parse(text.split('\n\n')[1]);
-    expect(parsed.hasBasicFilter).toBe(true);
-    expect(parsed.basicFilter.filterCriteria).toHaveLength(1);
-    expect(parsed.basicFilter.filterCriteria[0].columnIndex).toBe(1);
-    expect(parsed.basicFilter.filterCriteria[0].columnLetter).toBe('B');
-  });
-
   it('should throw when sheet is not found', async () => {
     mockSheets.spreadsheets.get.mockResolvedValue({
       data: {

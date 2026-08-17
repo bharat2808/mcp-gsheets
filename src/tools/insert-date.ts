@@ -4,6 +4,7 @@ import { getAuthenticatedClient } from '../utils/google-auth.js';
 import { handleError } from '../utils/error-handler.js';
 import { formatToolResponse } from '../utils/formatters.js';
 import { ToolResponse } from '../types/tools.js';
+import { extractSheetName, getSheetId, parseRange } from '../utils/range-helpers.js';
 
 const insertDateInputSchema = z.object({
   spreadsheetId: z.string().min(1, 'Spreadsheet ID is required'),
@@ -17,7 +18,7 @@ const insertDateInputSchema = z.object({
 export type InsertDateInput = z.infer<typeof insertDateInputSchema>;
 
 export const insertDateTool: Tool = {
-  name: 'sheets_insert_date',
+  name: 'insert_date',
   description:
     'Insert properly formatted dates in Google Sheets with locale support and automatic detection',
   inputSchema: {
@@ -108,19 +109,29 @@ function parseDate(dateInput: string): Date {
   return parsed;
 }
 
-function formatDateForSheets(date: Date, format: string): string {
+function formatDateForSheets(date: Date, format: string, useEUFormat: boolean): string {
   switch (format) {
     case 'iso':
-      return date.toISOString().split('T')[0] || '';
+      return `${date.getFullYear().toString().padStart(4, '0')}-${(date.getMonth() + 1)
+        .toString()
+        .padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
     case 'us':
       return `${(date.getMonth() + 1).toString()}/${date.getDate().toString()}/${date.getFullYear().toString()}`;
     case 'eu':
       return `${date.getDate().toString()}.${(date.getMonth() + 1).toString()}.${date.getFullYear().toString()}`;
     case 'locale':
     default:
-      // Return in a format that Google Sheets will recognize as a date
-      return date.toISOString().split('T')[0] || '';
+      return useEUFormat
+        ? `${date.getDate().toString()}.${(date.getMonth() + 1).toString()}.${date.getFullYear().toString()}`
+        : `${(date.getMonth() + 1).toString()}/${date.getDate().toString()}/${date.getFullYear().toString()}`;
   }
+}
+
+function dateSerial(date: Date): number {
+  return (
+    (Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) - Date.UTC(1899, 11, 30)) /
+    86_400_000
+  );
 }
 
 export async function handleInsertDate(input: any): Promise<ToolResponse> {
@@ -132,70 +143,66 @@ export async function handleInsertDate(input: any): Promise<ToolResponse> {
     const parsedDate = parseDate(validatedInput.date);
 
     // Format the date according to preference
-    const formattedDate = formatDateForSheets(parsedDate, validatedInput.format);
+    const formattedDate = formatDateForSheets(
+      parsedDate,
+      validatedInput.format,
+      validatedInput.useEUFormat
+    );
 
-    // Update the cell with the formatted date
-    const updateResponse = await sheets.spreadsheets.values.update({
+    const { sheetName, range: cleanRange } = extractSheetName(validatedInput.range);
+    const sheetId = await getSheetId(sheets, validatedInput.spreadsheetId, sheetName);
+    const gridRange = parseRange(cleanRange, sheetId);
+    const pattern =
+      validatedInput.format === 'iso'
+        ? 'yyyy-mm-dd'
+        : validatedInput.format === 'us' ||
+            (validatedInput.format === 'locale' && !validatedInput.useEUFormat)
+          ? 'm/d/yyyy'
+          : 'd.m.yyyy';
+
+    // Write a calendar date as a Sheets serial and set its number format atomically.
+    await sheets.spreadsheets.batchUpdate({
       spreadsheetId: validatedInput.spreadsheetId,
-      range: validatedInput.range,
-      valueInputOption: 'USER_ENTERED', // This allows Google Sheets to auto-detect dates
       requestBody: {
-        values: [[formattedDate]],
-      },
-    });
-
-    // If locale format is requested, apply basic date formatting to the cell
-    if (validatedInput.format === 'locale') {
-      try {
-        // Use EU pattern for EU format, US pattern otherwise
-        const pattern = validatedInput.useEUFormat ? 'd.M.yyyy' : 'M/d/yyyy';
-
-        // Apply date number format based on useEUFormat
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId: validatedInput.spreadsheetId,
-          requestBody: {
-            requests: [
-              {
-                repeatCell: {
-                  range: {
-                    sheetId: 0, // Will need to determine actual sheet ID
-                    startRowIndex: 0,
-                    endRowIndex: 1,
-                    startColumnIndex: 0,
-                    endColumnIndex: 1,
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      numberFormat: {
-                        type: 'DATE',
-                        pattern: pattern,
+        requests: [
+          {
+            updateCells: {
+              start: {
+                sheetId,
+                rowIndex: gridRange.startRowIndex ?? 0,
+                columnIndex: gridRange.startColumnIndex ?? 0,
+              },
+              rows: [
+                {
+                  values: [
+                    {
+                      userEnteredValue: { numberValue: dateSerial(parsedDate) },
+                      userEnteredFormat: {
+                        numberFormat: { type: 'DATE', pattern },
                       },
                     },
-                  },
-                  fields: 'userEnteredFormat.numberFormat',
+                  ],
                 },
-              },
-            ],
+              ],
+              fields: 'userEnteredValue,userEnteredFormat.numberFormat',
+            },
           },
-        });
-      } catch (formatError) {
-        // Continue if formatting fails, the date was still inserted
-        console.warn('Date formatting failed:', formatError);
-      }
-    }
+        ],
+      },
+    });
 
     // Use semicolon for EU format, comma for US format
     const separator = validatedInput.useEUFormat ? ';' : ',';
 
     return formatToolResponse(`Successfully inserted date in range ${validatedInput.range}`, {
       spreadsheetId: validatedInput.spreadsheetId,
-      range: updateResponse.data.updatedRange,
+      range: validatedInput.range,
       originalDate: validatedInput.date,
       parsedDate: parsedDate.toISOString(),
       formattedDate,
       format: validatedInput.format,
       separator: separator,
-      updatedCells: updateResponse.data.updatedCells || 0,
+      updatedCells: 1,
     });
   } catch (error) {
     return handleError(error);

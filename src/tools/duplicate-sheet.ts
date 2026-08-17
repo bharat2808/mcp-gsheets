@@ -5,7 +5,7 @@ import { validateDuplicateSheetInput } from '../utils/validators.js';
 import { formatSheetOperationResponse } from '../utils/formatters.js';
 
 export const duplicateSheetTool: Tool = {
-  name: 'sheets_duplicate_sheet',
+  name: 'duplicate_sheet',
   description: 'Duplicate a sheet within a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',
@@ -16,7 +16,7 @@ export const duplicateSheetTool: Tool = {
       },
       sheetId: {
         type: 'number',
-        description: 'The ID of the sheet to duplicate (use sheets_get_metadata to find sheet IDs)',
+        description: 'The ID of the sheet to duplicate (use get_metadata to find sheet IDs)',
       },
       insertSheetIndex: {
         type: 'number',

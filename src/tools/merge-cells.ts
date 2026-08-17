@@ -19,7 +19,7 @@ const unmergeCellsInputSchema = z.object({
 });
 
 export const mergeCellsTool: Tool = {
-  name: 'sheets_merge_cells',
+  name: 'merge_cells',
   description: 'Merge cells in a Google Sheet',
   inputSchema: {
     type: 'object',
@@ -29,7 +29,7 @@ export const mergeCellsTool: Tool = {
 };
 
 export const unmergeCellsTool: Tool = {
-  name: 'sheets_unmerge_cells',
+  name: 'unmerge_cells',
   description: 'Unmerge cells in a Google Sheet',
   inputSchema: {
     type: 'object',

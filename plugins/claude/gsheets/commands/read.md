@@ -23,4 +23,4 @@ Read data from a Google Sheets spreadsheet.
 
 ## What Happens
 
-Calls `sheets_get_values` and returns the cell data as a formatted table.
+Calls `get_values` and returns the cell data as a formatted table.

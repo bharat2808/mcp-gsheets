@@ -6,7 +6,7 @@ import { formatToolResponse } from '../utils/formatters.js';
 import { extractSheetName, getSheetId, parseRange } from '../utils/range-helpers.js';
 
 export const insertRowsTool: Tool = {
-  name: 'sheets_insert_rows',
+  name: 'insert_rows',
   description: 'Insert new rows at a specific position with optional data',
   inputSchema: {
     type: 'object',

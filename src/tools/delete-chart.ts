@@ -6,7 +6,7 @@ import { formatToolResponse } from '../utils/formatters.js';
 import { ToolResponse } from '../types/tools.js';
 
 export const deleteChartTool: Tool = {
-  name: 'sheets_delete_chart',
+  name: 'delete_chart',
   description: 'Delete a chart from a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',
@@ -17,7 +17,7 @@ export const deleteChartTool: Tool = {
       },
       chartId: {
         type: 'number',
-        description: 'The ID of the chart to delete (use sheets_get_metadata to find chart IDs)',
+        description: 'The ID of the chart to delete (use get_metadata to find chart IDs)',
       },
     },
     required: ['spreadsheetId', 'chartId'],

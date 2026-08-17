@@ -8,7 +8,7 @@ const CheckAccessSchema = z.object({
 });
 
 export const checkAccessTool: Tool = {
-  name: 'sheets_check_access',
+  name: 'check_access',
   description:
     'Check access permissions for a spreadsheet. Returns information about what operations are allowed.',
   inputSchema: {
@@ -90,8 +90,7 @@ export async function handleCheckAccess(input: any) {
       if (error.code === 404) {
         permissions.error = 'Spreadsheet not found. Check if the ID is correct.';
       } else if (error.code === 403) {
-        permissions.error =
-          'Access denied. The spreadsheet needs to be shared with your service account.';
+        permissions.error = 'Access denied for the connected Google account.';
       } else {
         permissions.error = error.message || 'Unknown error occurred';
       }
@@ -101,7 +100,7 @@ export async function handleCheckAccess(input: any) {
         permissions,
         error: permissions.error,
         recommendation:
-          'Share the spreadsheet with your service account email and grant appropriate permissions.',
+          'Ask the owner to grant the connected Google account appropriate permissions.',
       };
     }
   } catch (error) {

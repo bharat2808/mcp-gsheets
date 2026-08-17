@@ -6,7 +6,7 @@ import { formatToolResponse } from '../utils/formatters.js';
 import { ToolResponse } from '../types/tools.js';
 
 export const batchDeleteSheetsTool: Tool = {
-  name: 'sheets_batch_delete_sheets',
+  name: 'batch_delete_sheets',
   description: 'Delete multiple sheets from a Google Sheets spreadsheet in a single operation',
   inputSchema: {
     type: 'object',
@@ -20,7 +20,7 @@ export const batchDeleteSheetsTool: Tool = {
         items: {
           type: 'number',
         },
-        description: 'Array of sheet IDs to delete (use sheets_get_metadata to find sheet IDs)',
+        description: 'Array of sheet IDs to delete (use get_metadata to find sheet IDs)',
       },
     },
     required: ['spreadsheetId', 'sheetIds'],

@@ -45,12 +45,12 @@ Sheet: ${sheetName}
 Data description: ${dataDescription}
 
 Please help me:
-1. First, check if I have access to the spreadsheet using sheets_check_access
+1. First, check if I have access to the spreadsheet using check_access
 2. Define appropriate column headers based on the data description
-3. Create the table structure using sheets_update_values
-4. Optionally format the header row (bold, background color) using sheets_format_cells
+3. Create the table structure using update_values
+4. Optionally format the header row (bold, background color) using format_cells
 
-Please proceed step by step.`,
+Report whether each mutation applied directly or returned a visual-review proposal. Never describe a pending proposal as written.`,
         },
       },
     ],
@@ -108,12 +108,12 @@ Data range: ${range}
 Style: ${reportStyle} - ${styleGuide[reportStyle] || styleGuide['professional']}
 
 Please help me:
-1. First, read the data to understand its structure using sheets_get_values
-2. Format the header row (first row) with appropriate styling using sheets_format_cells
-3. Add borders to the data range using sheets_update_borders
+1. First, read the data to understand its structure using get_values
+2. Format the header row (first row) with appropriate styling using format_cells
+3. Add borders to the data range using update_borders
 4. Optionally auto-resize columns for better readability
 
-Use the ${reportStyle} style guidelines to make the report look great.`,
+Use the ${reportStyle} style guidelines. Report the returned verification state for each formatting operation.`,
         },
       },
     ],
@@ -165,8 +165,8 @@ Data range: ${range}
 Analysis type: ${analysisType}
 
 Please help me:
-1. First, get the spreadsheet metadata using sheets_get_metadata to understand the structure
-2. Read the data from the specified range using sheets_get_values
+1. First, get the spreadsheet metadata using get_metadata to understand the structure
+2. Read the data from the specified range using get_values
 3. Analyze the data and provide:
    - Overview of the data structure (columns, rows, data types)
    - Key statistics (counts, sums, averages where applicable)
@@ -225,15 +225,15 @@ Data range: ${dataRange}
 Chart type: ${chartType}
 
 Please help me:
-1. First, read the data to understand what we're visualizing using sheets_get_values
-2. Get the sheet ID needed for chart creation using sheets_get_metadata
-3. Create the chart using sheets_create_chart with appropriate configuration:
+1. First, read the data to understand what we're visualizing using get_values
+2. Get the sheet ID needed for chart creation using get_metadata
+3. Create the chart using create_chart with appropriate configuration:
    - Title based on the data
    - Proper axis labels
    - Legend if needed
 4. Position the chart appropriately on the sheet
 
-Provide the chart configuration and create it step by step.`,
+Provide the chart configuration, create it step by step, and report whether the operation applied or requires visual review.`,
         },
       },
     ],

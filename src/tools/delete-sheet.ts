@@ -5,7 +5,7 @@ import { validateDeleteSheetInput } from '../utils/validators.js';
 import { formatSheetOperationResponse } from '../utils/formatters.js';
 
 export const deleteSheetTool: Tool = {
-  name: 'sheets_delete_sheet',
+  name: 'delete_sheet',
   description: 'Delete a sheet from a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',
@@ -16,7 +16,7 @@ export const deleteSheetTool: Tool = {
       },
       sheetId: {
         type: 'number',
-        description: 'The ID of the sheet to delete (use sheets_get_metadata to find sheet IDs)',
+        description: 'The ID of the sheet to delete (use get_metadata to find sheet IDs)',
       },
     },
     required: ['spreadsheetId', 'sheetId'],

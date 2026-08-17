@@ -5,7 +5,7 @@ import { validateUpdateSheetPropertiesInput } from '../utils/validators.js';
 import { formatSheetOperationResponse } from '../utils/formatters.js';
 
 export const updateSheetPropertiesTool: Tool = {
-  name: 'sheets_update_sheet_properties',
+  name: 'update_sheet_properties',
   description: 'Update properties of a sheet in a Google Sheets spreadsheet',
   inputSchema: {
     type: 'object',
@@ -16,7 +16,7 @@ export const updateSheetPropertiesTool: Tool = {
       },
       sheetId: {
         type: 'number',
-        description: 'The ID of the sheet to update (use sheets_get_metadata to find sheet IDs)',
+        description: 'The ID of the sheet to update (use get_metadata to find sheet IDs)',
       },
       title: {
         type: 'string',

@@ -2,8 +2,8 @@ import {
   InsertDataOption,
   GridProperties,
   TabColor,
-  Color as CommonColor,
-  CellFormat as CommonCellFormat,
+  Color,
+  CellFormat,
   BorderStyle,
   RangeRequestFields,
   SheetRequestFields,
@@ -88,9 +88,6 @@ export interface CopyToInput {
   destinationSpreadsheetId: string;
 }
 
-// Re-export Color from common for backward compatibility
-export type Color = CommonColor;
-
 export interface TextFormat {
   foregroundColor?: Color;
   fontFamily?: string;
@@ -105,9 +102,6 @@ export interface NumberFormat {
   type: 'TEXT' | 'NUMBER' | 'PERCENT' | 'CURRENCY' | 'DATE' | 'TIME' | 'DATE_TIME' | 'SCIENTIFIC';
   pattern?: string;
 }
-
-// Re-export CellFormat from common for backward compatibility
-export type CellFormat = CommonCellFormat;
 
 export interface FormatCellsInput {
   spreadsheetId: string;

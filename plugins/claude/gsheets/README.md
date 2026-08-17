@@ -1,72 +1,19 @@
-# Google Sheets Plugin for Claude Code
+# Google Sheets plugin
 
-Google Sheets integration for reading, writing, formatting, and managing spreadsheets.
+This companion package uses the same `0.2.0` local MCP server and normalized operations as the Codex plugin.
 
-## What's Included
+Build the repository, configure the server command to run `dist/index.js`, then call `get_connection_status`. Open its localhost setup URL and enter credentials for a Google OAuth **Desktop app**. Enable both the Google Sheets API and Google Drive API in the Cloud project. Do not put OAuth secrets in the MCP configuration or environment.
 
-- **MCP Server** - Connects Claude Code to Google Sheets API
-- **Skills** - Auto-triggers for spreadsheet tasks
-- **Agents** - `data-analyst` for spreadsheet operations
-- **Commands** - `/sheets:read`, `/sheets:write`, `/sheets:format`
+The account grants full Drive plus Sheets access, with an in-product boundary of explicitly selected folders owned by the authenticated account and root-reachable in My Drive. Shared Drives and Shared-with-me roots are excluded. Existing `0.1.x` connections require one-time re-consent.
 
-## Installation
+Use `GSHEETS_TOOL_CATEGORIES=all` when the companion commands need formatting, chart, table, worksheet, analysis, and account operations. The default is `core`; `GSHEETS_READ_ONLY=true` disables mutations.
 
-```bash
-claude plugin install gsheets
-```
+Reads and verified non-lossy work may complete immediately. Appends, formulas, populated overwrites, removals, destructive structure changes, replacements, and sign-out return a visual-review proposal. Never describe a proposal as applied. Approval, editing, and cancellation are app-only.
 
-**Required environment variables:**
-```
-GOOGLE_PROJECT_ID=your-project-id
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-```
+Commands:
 
-## Commands
+- `/sheets:read` reads a range with `get_values`.
+- `/sheets:write` requests `update_values` and reports whether it applied or needs review.
+- `/sheets:format` requests `format_cells` after inspecting the target.
 
-### /sheets:read
-
-Read data from a spreadsheet:
-
-```
-/sheets:read <spreadsheet-id> <range>
-/sheets:read 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms Sheet1!A1:D10
-```
-
-### /sheets:write
-
-Write data to cells:
-
-```
-/sheets:write <spreadsheet-id> <range> <values>
-/sheets:write 1Bxi... Sheet1!A1 "Hello,World"
-```
-
-### /sheets:format
-
-Format cells (colors, fonts, borders):
-
-```
-/sheets:format <spreadsheet-id> <range> <format>
-/sheets:format 1Bxi... A1:B5 bold background:#ffff00
-```
-
-## Agents
-
-Spawn the data analyst for focused work:
-
-```
-spawn data-analyst to analyze sales data in spreadsheet 1Bxi...
-spawn data-analyst to create a chart from the quarterly report
-```
-
-## Usage Examples
-
-- "Read the first 10 rows from my spreadsheet"
-- "Update cell A1 with today's date"
-- "Create a bar chart from columns A and B"
-- "Format the header row as bold with blue background"
-
-## Links
-
-- [Repository](https://github.com/freema/mcp-gsheets)
-- [npm](https://www.npmjs.com/package/mcp-gsheets)
+The `data-analyst` companion agent can read, analyze, format, chart, and prepare reviewed changes.

@@ -13,7 +13,7 @@ const inputSchema = z.object({
 });
 
 export const getSheetDimensionsTool: Tool = {
-  name: 'sheets_get_sheet_dimensions',
+  name: 'get_sheet_dimensions',
   description:
     'Get column widths (pixelSize), row heights (pixelSize), hidden columns/rows, and frozen row/column counts for a sheet.',
   inputSchema: {
