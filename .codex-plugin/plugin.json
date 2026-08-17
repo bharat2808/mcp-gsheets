@@ -1,6 +1,6 @@
 {
   "name": "gsheets",
-  "version": "0.2.0+codex.20260807200251",
+  "version": "0.2.0+codex.20260817153038",
   "description": "Search and safely update Google Sheets from selected owned My Drive folders.",
   "author": {
     "name": "bharat2808"
